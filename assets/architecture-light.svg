@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 300"
+  font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<rect width="680" height="300" fill="#ffffff" rx="8"/>
+
+<!-- Title -->
+<text x="340" y="28" text-anchor="middle" fill="#1f2328" font-size="14" font-weight="600">Architecture</text>
+
+<!-- Python API layer -->
+<rect x="40" y="55" width="600" height="50" fill="#f6f8fa" stroke="#d0d7de" rx="8"/>
+<text x="340" y="75" text-anchor="middle" fill="#1f2328" font-size="13" font-weight="600">Python API</text>
+<text x="340" y="93" text-anchor="middle" fill="#656d76" font-size="11">ws["A1"].value &middot; Font(bold=True) &middot; wb.save() &middot; iter_rows()</text>
+
+<!-- Arrows -->
+<line x1="150" y1="105" x2="150" y2="140" stroke="#afb8c1" stroke-width="2" marker-end="url(#arrow-l)"/>
+<line x1="340" y1="105" x2="340" y2="140" stroke="#afb8c1" stroke-width="2" marker-end="url(#arrow-l)"/>
+<line x1="530" y1="105" x2="530" y2="140" stroke="#afb8c1" stroke-width="2" marker-end="url(#arrow-l)"/>
+
+<!-- Arrow marker -->
+<defs>
+  <marker id="arrow-l" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-auto">
+    <path d="M 0 0 L 10 5 L 0 10 z" fill="#afb8c1"/>
+  </marker>
+</defs>
+
+<!-- Read mode -->
+<rect x="40" y="140" width="220" height="65" fill="#f6f8fa" stroke="#1a7f37" stroke-width="2" rx="8"/>
+<text x="150" y="163" text-anchor="middle" fill="#1a7f37" font-size="12" font-weight="600">Read Mode</text>
+<text x="150" y="180" text-anchor="middle" fill="#656d76" font-size="10">load_workbook(path)</text>
+<text x="150" y="195" text-anchor="middle" fill="#656d76" font-size="10">Full style extraction</text>
+
+<!-- Write mode -->
+<rect x="230" y="140" width="220" height="65" fill="#f6f8fa" stroke="#0969da" stroke-width="2" rx="8"/>
+<text x="340" y="163" text-anchor="middle" fill="#0969da" font-size="12" font-weight="600">Write Mode</text>
+<text x="340" y="180" text-anchor="middle" fill="#656d76" font-size="10">Workbook()</text>
+<text x="340" y="195" text-anchor="middle" fill="#656d76" font-size="10">New file from scratch</text>
+
+<!-- Modify mode -->
+<rect x="420" y="140" width="220" height="65" fill="#f6f8fa" stroke="#9a6700" stroke-width="2" rx="8"/>
+<text x="530" y="163" text-anchor="middle" fill="#9a6700" font-size="12" font-weight="600">Modify Mode</text>
+<text x="530" y="180" text-anchor="middle" fill="#656d76" font-size="10">load_workbook(modify=True)</text>
+<text x="530" y="195" text-anchor="middle" fill="#656d76" font-size="10">Preserves charts/macros</text>
+
+<!-- Arrows to Rust -->
+<line x1="150" y1="205" x2="150" y2="235" stroke="#afb8c1" stroke-width="2" marker-end="url(#arrow-l)"/>
+<line x1="340" y1="205" x2="340" y2="235" stroke="#afb8c1" stroke-width="2" marker-end="url(#arrow-l)"/>
+<line x1="530" y1="205" x2="530" y2="235" stroke="#afb8c1" stroke-width="2" marker-end="url(#arrow-l)"/>
+
+<!-- Rust engines -->
+<rect x="40" y="235" width="220" height="45" fill="#f6f8fa" stroke="#b7410e" rx="8"/>
+<text x="150" y="258" text-anchor="middle" fill="#b7410e" font-size="12" font-weight="600">calamine-styles</text>
+<text x="150" y="273" text-anchor="middle" fill="#656d76" font-size="10">Rust XLSX parser + styles</text>
+
+<rect x="230" y="235" width="220" height="45" fill="#f6f8fa" stroke="#b7410e" rx="8"/>
+<text x="340" y="258" text-anchor="middle" fill="#b7410e" font-size="12" font-weight="600">rust_xlsxwriter</text>
+<text x="340" y="273" text-anchor="middle" fill="#656d76" font-size="10">Rust XLSX writer</text>
+
+<rect x="420" y="235" width="220" height="45" fill="#f6f8fa" stroke="#b7410e" rx="8"/>
+<text x="530" y="258" text-anchor="middle" fill="#b7410e" font-size="12" font-weight="600">XlsxPatcher</text>
+<text x="530" y="273" text-anchor="middle" fill="#656d76" font-size="10">Surgical ZIP patcher</text>
+
+</svg>

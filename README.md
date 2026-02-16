@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://pypi.org/project/wolfxl/"><img src="https://img.shields.io/pypi/v/wolfxl?color=blue&label=PyPI" alt="PyPI"></a>
   <a href="https://pypi.org/project/wolfxl/"><img src="https://img.shields.io/pypi/pyversions/wolfxl?color=blue" alt="Python"></a>
-  <a href="https://github.com/wolfiesch/ExcelBench/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
+  <a href="https://github.com/wolfiesch/wolfxl/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
   <a href="https://excelbench.vercel.app"><img src="https://img.shields.io/badge/benchmarks-ExcelBench-orange" alt="ExcelBench"></a>
 </p>
 
@@ -81,7 +81,7 @@ wb.close()
 
 | Mode | Usage | Engine | What it does |
 |------|-------|--------|--------------|
-| **Read** | `load_workbook(path)` | [calamine](https://github.com/tafia/calamine) | Parse XLSX with full style extraction |
+| **Read** | `load_workbook(path)` | [calamine-styles](https://crates.io/crates/calamine-styles) | Parse XLSX with full style extraction |
 | **Write** | `Workbook()` | [rust_xlsxwriter](https://github.com/jmcnamara/rust_xlsxwriter) | Create new XLSX files from scratch |
 | **Modify** | `load_workbook(path, modify=True)` | XlsxPatcher | Surgical ZIP patch — only changed cells are rewritten |
 
@@ -106,6 +106,24 @@ Modify mode preserves everything it doesn't touch: charts, macros, images, pivot
 | 10M cells | 45 MB | **13.0s** | 47.8s | **6.7s** | 31.8s |
 
 Throughput stays flat as files grow — no hidden O(n^2) pathology.
+
+## How WolfXL Compares
+
+Every Rust-backed Python Excel project picks a different slice of the problem. WolfXL is the only one that covers all three: formatting, modify mode, and openpyxl API compatibility.
+
+| Library | Read | Write | Modify | Styling | openpyxl API |
+|---------|:----:|:-----:|:------:|:-------:|:------------:|
+| [fastexcel](https://github.com/ToucanToco/fastexcel) | Yes | — | — | — | — |
+| [python-calamine](https://github.com/dimastbk/python-calamine) | Yes | — | — | — | — |
+| [FastXLSX](https://github.com/shuangluoxss/fastxlsx) | Yes | Yes | — | — | — |
+| [rustpy-xlsxwriter](https://github.com/rahmadafandi/rustpy-xlsxwriter) | — | Yes | — | Partial | — |
+| **WolfXL** | **Yes** | **Yes** | **Yes** | **Yes** | **Yes** |
+
+- **Styling** = reads and writes fonts, fills, borders, alignment, number formats
+- **Modify** = open an existing file, change cells, save back — without rebuilding from scratch
+- **openpyxl API** = same `load_workbook`, `Workbook`, `Cell`, `Font`, `PatternFill` objects
+
+Upstream [calamine](https://github.com/tafia/calamine) does not parse styles. WolfXL's read engine uses [calamine-styles](https://crates.io/crates/calamine-styles), a fork that adds Font/Fill/Border/Alignment/NumberFormat extraction from OOXML.
 
 ## How It Works
 

@@ -5,7 +5,7 @@
 ### Fixed
 
 - Build full wheel matrix for macOS and Windows (Python 3.9-3.13)
-- Use native Intel runner (macos-13) for x86_64 macOS wheels instead of cross-compilation
+- Use macos-14 (Apple Silicon) with cross-compilation for x86_64 macOS wheels (macos-13 Intel runners unavailable)
 - Fix Windows build failure caused by PyO3 discovering Python 3.14 pre-release
 
 ## 0.1.0 (2026-02-15)
