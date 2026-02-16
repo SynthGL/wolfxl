@@ -51,11 +51,12 @@ jobs:
             3.11
             3.12
             3.13
+          allow-prereleases: false
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}-apple-darwin
-          args: --release --out dist --find-interpreter
+          args: --release --out dist -i python3.9 python3.10 python3.11 python3.12 python3.13
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-macos-${{ matrix.target }}
@@ -63,23 +64,22 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: |
-            3.9
-            3.10
-            3.11
-            3.12
-            3.13
+          python-version: ${{ matrix.python-version }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          args: --release --out dist --find-interpreter
+          args: --release --out dist
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-windows
+          name: wheels-windows-${{ matrix.python-version }}
           path: dist
 
   sdist:
