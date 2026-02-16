@@ -17,10 +17,12 @@ Usage::
     wb.save("out.xlsx")
 """
 
+from wolfxl._rust import __version__
 from wolfxl._styles import Alignment, Border, Color, Font, PatternFill, Side
 from wolfxl._workbook import Workbook
 
 __all__ = [
+    "__version__",
     "Alignment",
     "Border",
     "Color",
