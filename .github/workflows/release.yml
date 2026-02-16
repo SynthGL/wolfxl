@@ -37,7 +37,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14
+          - runner: macos-13
             target: x86_64
           - runner: macos-14
             target: aarch64
@@ -45,12 +45,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: |
+            3.9
+            3.10
+            3.11
+            3.12
+            3.13
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}-apple-darwin
-          args: --release --out dist
+          args: --release --out dist --find-interpreter
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-macos-${{ matrix.target }}
@@ -62,11 +67,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: |
+            3.9
+            3.10
+            3.11
+            3.12
+            3.13
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          args: --release --out dist
+          args: --release --out dist --find-interpreter
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-windows

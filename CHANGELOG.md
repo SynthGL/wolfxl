@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1 (2026-02-16)
+
+### Fixed
+
+- Build full wheel matrix for macOS and Windows (Python 3.9-3.13)
+- Use native Intel runner (macos-13) for x86_64 macOS wheels instead of cross-compilation
+
 ## 0.1.0 (2026-02-15)
 
 Initial release. Extracted from [ExcelBench](https://github.com/wolfiesch/ExcelBench).
