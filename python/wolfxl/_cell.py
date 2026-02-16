@@ -1,0 +1,422 @@
+"""Cell proxy — dispatches property access to the Rust backend."""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import TYPE_CHECKING, Any
+
+from wolfxl._styles import Alignment, Border, Color, Font, PatternFill, Side
+from wolfxl._utils import rowcol_to_a1
+
+if TYPE_CHECKING:
+    from wolfxl._worksheet import Worksheet
+
+
+class Cell:
+    """Lightweight proxy for a single cell.
+
+    In read mode, properties call into the Rust backend on first access.
+    In write mode, assignments queue pending state flushed on ``save()``.
+    """
+
+    __slots__ = (
+        "_ws",
+        "_row",
+        "_col",
+        "_value",
+        "_font",
+        "_fill",
+        "_border",
+        "_alignment",
+        "_number_format",
+        "_value_dirty",
+        "_format_dirty",
+    )
+
+    def __init__(self, ws: Worksheet, row: int, col: int) -> None:
+        self._ws = ws
+        self._row = row
+        self._col = col
+        # Sentinel — None is a valid value so we use a special marker.
+        self._value: Any = _UNSET
+        self._font: Font | None | _Sentinel = _UNSET
+        self._fill: PatternFill | None | _Sentinel = _UNSET
+        self._border: Border | None | _Sentinel = _UNSET
+        self._alignment: Alignment | None | _Sentinel = _UNSET
+        self._number_format: str | None | _Sentinel = _UNSET
+        self._value_dirty = False
+        self._format_dirty = False
+
+    @property
+    def coordinate(self) -> str:
+        return rowcol_to_a1(self._row, self._col)
+
+    @property
+    def row(self) -> int:
+        return self._row
+
+    @property
+    def column(self) -> int:
+        return self._col
+
+    # ------------------------------------------------------------------
+    # Value
+    # ------------------------------------------------------------------
+
+    @property
+    def value(self) -> Any:
+        if self._value is _UNSET:
+            self._value = self._read_value()
+        return self._value
+
+    @value.setter
+    def value(self, val: Any) -> None:
+        self._value = val
+        self._value_dirty = True
+        self._ws._mark_dirty(self._row, self._col)  # noqa: SLF001
+
+    # ------------------------------------------------------------------
+    # Font
+    # ------------------------------------------------------------------
+
+    @property
+    def font(self) -> Font:
+        if self._font is _UNSET:
+            self._font = self._read_font()
+        return self._font  # type: ignore[return-value]
+
+    @font.setter
+    def font(self, val: Font) -> None:
+        self._font = val
+        self._format_dirty = True
+        self._ws._mark_dirty(self._row, self._col)  # noqa: SLF001
+
+    # ------------------------------------------------------------------
+    # Fill
+    # ------------------------------------------------------------------
+
+    @property
+    def fill(self) -> PatternFill:
+        if self._fill is _UNSET:
+            self._fill = self._read_fill()
+        return self._fill  # type: ignore[return-value]
+
+    @fill.setter
+    def fill(self, val: PatternFill) -> None:
+        self._fill = val
+        self._format_dirty = True
+        self._ws._mark_dirty(self._row, self._col)  # noqa: SLF001
+
+    # ------------------------------------------------------------------
+    # Border
+    # ------------------------------------------------------------------
+
+    @property
+    def border(self) -> Border:
+        if self._border is _UNSET:
+            self._border = self._read_border()
+        return self._border  # type: ignore[return-value]
+
+    @border.setter
+    def border(self, val: Border) -> None:
+        self._border = val
+        self._format_dirty = True
+        self._ws._mark_dirty(self._row, self._col)  # noqa: SLF001
+
+    # ------------------------------------------------------------------
+    # Alignment
+    # ------------------------------------------------------------------
+
+    @property
+    def alignment(self) -> Alignment:
+        if self._alignment is _UNSET:
+            self._alignment = self._read_alignment()
+        return self._alignment  # type: ignore[return-value]
+
+    @alignment.setter
+    def alignment(self, val: Alignment) -> None:
+        self._alignment = val
+        self._format_dirty = True
+        self._ws._mark_dirty(self._row, self._col)  # noqa: SLF001
+
+    # ------------------------------------------------------------------
+    # Number format
+    # ------------------------------------------------------------------
+
+    @property
+    def number_format(self) -> str | None:
+        if self._number_format is _UNSET:
+            self._number_format = self._read_number_format()
+        return self._number_format  # type: ignore[return-value]
+
+    @number_format.setter
+    def number_format(self, val: str | None) -> None:
+        self._number_format = val
+        self._format_dirty = True
+        self._ws._mark_dirty(self._row, self._col)  # noqa: SLF001
+
+    # ------------------------------------------------------------------
+    # Read helpers (dispatch to Rust via workbook)
+    # ------------------------------------------------------------------
+
+    def _read_value(self) -> Any:
+        wb = self._ws._workbook  # noqa: SLF001
+        if wb._rust_reader is None:  # noqa: SLF001
+            return None
+        payload = wb._rust_reader.read_cell_value(  # noqa: SLF001
+            self._ws.title, self.coordinate,
+        )
+        return _payload_to_python(payload)
+
+    def _read_font(self) -> Font:
+        wb = self._ws._workbook  # noqa: SLF001
+        if wb._rust_reader is None:  # noqa: SLF001
+            return Font()
+        payload = wb._rust_reader.read_cell_format(  # noqa: SLF001
+            self._ws.title, self.coordinate,
+        )
+        return _format_to_font(payload)
+
+    def _read_fill(self) -> PatternFill:
+        wb = self._ws._workbook  # noqa: SLF001
+        if wb._rust_reader is None:  # noqa: SLF001
+            return PatternFill()
+        payload = wb._rust_reader.read_cell_format(  # noqa: SLF001
+            self._ws.title, self.coordinate,
+        )
+        return _format_to_fill(payload)
+
+    def _read_border(self) -> Border:
+        wb = self._ws._workbook  # noqa: SLF001
+        if wb._rust_reader is None:  # noqa: SLF001
+            return Border()
+        payload = wb._rust_reader.read_cell_border(  # noqa: SLF001
+            self._ws.title, self.coordinate,
+        )
+        return _border_payload_to_border(payload)
+
+    def _read_alignment(self) -> Alignment:
+        wb = self._ws._workbook  # noqa: SLF001
+        if wb._rust_reader is None:  # noqa: SLF001
+            return Alignment()
+        payload = wb._rust_reader.read_cell_format(  # noqa: SLF001
+            self._ws.title, self.coordinate,
+        )
+        return _format_to_alignment(payload)
+
+    def _read_number_format(self) -> str | None:
+        wb = self._ws._workbook  # noqa: SLF001
+        if wb._rust_reader is None:  # noqa: SLF001
+            return None
+        payload = wb._rust_reader.read_cell_format(  # noqa: SLF001
+            self._ws.title, self.coordinate,
+        )
+        if isinstance(payload, dict):
+            return payload.get("number_format")
+        return None
+
+    def __repr__(self) -> str:
+        return f"<Cell {self.coordinate}>"
+
+
+# ======================================================================
+# Sentinel type for lazy-init detection
+# ======================================================================
+
+class _Sentinel:
+    """Marker to distinguish 'not yet loaded' from None."""
+
+    _instance: _Sentinel | None = None
+
+    def __new__(cls) -> _Sentinel:
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "<UNSET>"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+_UNSET = _Sentinel()
+
+
+# ======================================================================
+# Payload <-> Python conversion helpers
+# ======================================================================
+
+def _payload_to_python(payload: Any) -> Any:
+    """Convert a Rust cell-value payload dict to a plain Python value."""
+    if not isinstance(payload, dict):
+        return payload
+    t = payload.get("type", "blank")
+    v = payload.get("value")
+    if t == "blank":
+        return None
+    if t == "string":
+        return v
+    if t == "number":
+        return v
+    if t == "boolean":
+        return bool(v)
+    if t == "error":
+        return v
+    if t == "formula":
+        return payload.get("formula", v)
+    if t == "date":
+        if isinstance(v, str):
+            return date.fromisoformat(v)
+        return v
+    if t == "datetime":
+        if isinstance(v, str):
+            return datetime.fromisoformat(v)
+        return v
+    return v
+
+
+def _format_to_font(payload: Any) -> Font:
+    """Extract Font fields from a Rust format dict."""
+    if not isinstance(payload, dict) or not payload:
+        return Font()
+    color_raw = payload.get("font_color")
+    color: Color | str | None = None
+    if color_raw:
+        color = color_raw if isinstance(color_raw, str) else str(color_raw)
+    return Font(
+        name=payload.get("font_name"),
+        size=payload.get("font_size"),
+        bold=bool(payload.get("bold", False)),
+        italic=bool(payload.get("italic", False)),
+        underline=payload.get("underline"),
+        strike=bool(payload.get("strikethrough", False)),
+        color=color,
+    )
+
+
+def _format_to_fill(payload: Any) -> PatternFill:
+    """Extract PatternFill fields from a Rust format dict."""
+    if not isinstance(payload, dict) or not payload:
+        return PatternFill()
+    bg = payload.get("bg_color")
+    if bg:
+        return PatternFill(patternType="solid", fgColor=bg)
+    return PatternFill()
+
+
+def _format_to_alignment(payload: Any) -> Alignment:
+    """Extract Alignment fields from a Rust format dict."""
+    if not isinstance(payload, dict) or not payload:
+        return Alignment()
+    return Alignment(
+        horizontal=payload.get("h_align"),
+        vertical=payload.get("v_align"),
+        wrap_text=bool(payload.get("wrap", False)),
+        text_rotation=int(payload.get("rotation", 0)),
+        indent=int(payload.get("indent", 0)),
+    )
+
+
+def _border_payload_to_border(payload: Any) -> Border:
+    """Convert a Rust border dict to a Border dataclass."""
+    if not isinstance(payload, dict) or not payload:
+        return Border()
+    return Border(
+        left=_edge_to_side(payload.get("left")),
+        right=_edge_to_side(payload.get("right")),
+        top=_edge_to_side(payload.get("top")),
+        bottom=_edge_to_side(payload.get("bottom")),
+    )
+
+
+def _edge_to_side(edge: Any) -> Side:
+    if not isinstance(edge, dict):
+        return Side()
+    return Side(
+        style=edge.get("style"),
+        color=edge.get("color"),
+    )
+
+
+# ======================================================================
+# Python -> Rust payload converters (for write mode)
+# ======================================================================
+
+def python_value_to_payload(value: Any) -> dict[str, Any]:
+    """Convert a plain Python value to a Rust cell-value payload dict."""
+    if value is None:
+        return {"type": "blank"}
+    if isinstance(value, bool):
+        return {"type": "boolean", "value": value}
+    if isinstance(value, (int, float)):
+        return {"type": "number", "value": value}
+    if isinstance(value, datetime):
+        return {"type": "datetime", "value": value.replace(microsecond=0).isoformat()}
+    if isinstance(value, date):
+        return {"type": "date", "value": value.isoformat()}
+    if isinstance(value, str) and value.startswith("="):
+        return {"type": "formula", "formula": value, "value": value}
+    return {"type": "string", "value": str(value)}
+
+
+def font_to_format_dict(font: Font) -> dict[str, Any]:
+    """Convert a Font to a Rust format dict."""
+    d: dict[str, Any] = {}
+    if font.bold:
+        d["bold"] = True
+    if font.italic:
+        d["italic"] = True
+    if font.underline:
+        d["underline"] = font.underline
+    if font.strike:
+        d["strikethrough"] = True
+    if font.name:
+        d["font_name"] = font.name
+    if font.size is not None:
+        d["font_size"] = font.size
+    color_hex = font._color_hex()  # noqa: SLF001
+    if color_hex:
+        d["font_color"] = color_hex
+    return d
+
+
+def fill_to_format_dict(fill: PatternFill) -> dict[str, Any]:
+    """Convert a PatternFill to a Rust format dict."""
+    d: dict[str, Any] = {}
+    fg = fill._fg_hex()  # noqa: SLF001
+    if fg:
+        d["bg_color"] = fg
+    return d
+
+
+def alignment_to_format_dict(alignment: Alignment) -> dict[str, Any]:
+    """Convert an Alignment to a Rust format dict."""
+    d: dict[str, Any] = {}
+    if alignment.horizontal:
+        d["h_align"] = alignment.horizontal
+    if alignment.vertical:
+        d["v_align"] = alignment.vertical
+    if alignment.wrap_text:
+        d["wrap"] = True
+    if alignment.text_rotation:
+        d["rotation"] = alignment.text_rotation
+    if alignment.indent:
+        d["indent"] = alignment.indent
+    return d
+
+
+def border_to_rust_dict(border: Border) -> dict[str, Any]:
+    """Convert a Border to a Rust border dict."""
+    d: dict[str, Any] = {}
+    for edge_name in ("left", "right", "top", "bottom"):
+        side: Side = getattr(border, edge_name)
+        if side.style:
+            edge: dict[str, str] = {"style": side.style}
+            color = side._color_hex()  # noqa: SLF001
+            if color:
+                edge["color"] = color
+            else:
+                edge["color"] = "#000000"
+            d[edge_name] = edge
+    return d

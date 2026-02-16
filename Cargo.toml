@@ -1,0 +1,24 @@
+[package]
+name = "wolfxl"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Fast, openpyxl-compatible Excel I/O backed by Rust"
+repository = "https://github.com/wolfiesch/wolfxl"
+build = "build.rs"
+
+[lib]
+name = "wolfxl"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.24", features = ["extension-module", "multiple-pymethods"] }
+calamine-styles = { version = "0.1", features = ["dates"] }
+rust_xlsxwriter = { version = "0.79", features = ["chrono"] }
+indexmap = "2.2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = "0.37"
+chrono = "0.4"
+
+[build-dependencies]
+pyo3-build-config = "0.24"
