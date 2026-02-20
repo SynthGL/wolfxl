@@ -125,6 +125,48 @@ Every Rust-backed Python Excel project picks a different slice of the problem. W
 
 Upstream [calamine](https://github.com/tafia/calamine) does not parse styles. WolfXL's read engine uses [calamine-styles](https://crates.io/crates/calamine-styles), a fork that adds Font/Fill/Border/Alignment/NumberFormat extraction from OOXML.
 
+## Batch APIs for Maximum Speed
+
+For write-heavy workloads, use `append()` or `write_rows()` instead of cell-by-cell access. These APIs buffer rows as raw Python lists and flush them to Rust in a single call at save time, bypassing per-cell FFI overhead entirely.
+
+```python
+from wolfxl import Workbook
+
+wb = Workbook()
+ws = wb.active
+
+# append() — fast sequential writes (3.7x faster than cell-by-cell)
+ws.append(["Name", "Amount", "Date"])
+for row in data:
+    ws.append(row)
+
+# write_rows() — fast writes at arbitrary positions
+ws.write_rows(header_grid, start_row=1, start_col=1)
+ws.write_rows(data_grid, start_row=5, start_col=1)
+
+wb.save("output.xlsx")
+```
+
+For reads, `iter_rows(values_only=True)` uses a fast bulk path that reads all values in a single Rust call (6.7x faster than openpyxl):
+
+```python
+wb = load_workbook("data.xlsx")
+ws = wb[wb.sheetnames[0]]
+for row in ws.iter_rows(values_only=True):
+    process(row)  # row is a tuple of plain Python values
+```
+
+| API | vs openpyxl | How |
+|-----|-------------|-----|
+| `ws.append(row)` | **3.7x** faster write | Buffers rows, single Rust call at save |
+| `ws.write_rows(grid)` | **3.7x** faster write | Same mechanism, arbitrary start position |
+| `ws.iter_rows(values_only=True)` | **6.7x** faster read | Single Rust call, no Cell objects |
+| `ws.cell(r, c, value=v)` | **1.6x** faster write | Per-cell FFI (compatible but slower) |
+
+## Case Study: SynthGL
+
+[SynthGL](https://synthgl.dev) switched from openpyxl to WolfXL for their GL journal exports (14-column financial data, 1K-50K rows). Results: **4x faster writes**, **9x faster reads** at scale. 50K-row exports dropped from 7.6s to 1.3s. [Read the full case study](docs/case-study-synthgl.md).
+
 ## How It Works
 
 WolfXL is a thin Python layer over compiled Rust engines, connected via [PyO3](https://pyo3.rs/). The Python side uses **lazy cell proxies** — opening a 10M-cell file is instant. Values and styles are fetched from Rust only when you access them. On save, dirty cells are flushed in one batch, avoiding per-cell FFI overhead.

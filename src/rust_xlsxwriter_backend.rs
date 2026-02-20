@@ -1208,6 +1208,130 @@ impl RustXlsxWriterBook {
         Ok(())
     }
 
+    /// Rename a sheet, updating sheet_names and re-keying all stored data.
+    pub fn rename_sheet(&mut self, old_name: &str, new_name: &str) -> PyResult<()> {
+        let idx = self
+            .sheet_names
+            .iter()
+            .position(|n| n == old_name)
+            .ok_or_else(|| {
+                PyErr::new::<PyValueError, _>(format!("Unknown sheet: {old_name}"))
+            })?;
+        if self.sheet_names.contains(&new_name.to_string()) {
+            return Err(PyErr::new::<PyValueError, _>(format!(
+                "Sheet '{new_name}' already exists"
+            )));
+        }
+        self.sheet_names[idx] = new_name.to_string();
+
+        // Re-key values (IndexMap — preserves insertion order).
+        let old_keys: Vec<CellKey> = self
+            .values
+            .keys()
+            .filter(|(s, _, _)| s == old_name)
+            .cloned()
+            .collect();
+        for key in old_keys {
+            if let Some(payload) = self.values.swap_remove(&key) {
+                let new_key = (new_name.to_string(), key.1, key.2);
+                self.values.insert(new_key, payload);
+            }
+        }
+
+        // Re-key formats (HashMap).
+        let fmt_keys: Vec<CellKey> = self
+            .formats
+            .keys()
+            .filter(|(s, _, _)| s == old_name)
+            .cloned()
+            .collect();
+        for key in fmt_keys {
+            if let Some(fields) = self.formats.remove(&key) {
+                let new_key = (new_name.to_string(), key.1, key.2);
+                self.formats.insert(new_key, fields);
+            }
+        }
+
+        // Re-key borders (HashMap).
+        let bdr_keys: Vec<CellKey> = self
+            .borders
+            .keys()
+            .filter(|(s, _, _)| s == old_name)
+            .cloned()
+            .collect();
+        for key in bdr_keys {
+            if let Some(fields) = self.borders.remove(&key) {
+                let new_key = (new_name.to_string(), key.1, key.2);
+                self.borders.insert(new_key, fields);
+            }
+        }
+
+        // Re-key row heights.
+        let rh_keys: Vec<(String, u32)> = self
+            .row_heights
+            .keys()
+            .filter(|(s, _)| s == old_name)
+            .cloned()
+            .collect();
+        for key in rh_keys {
+            if let Some(h) = self.row_heights.remove(&key) {
+                self.row_heights.insert((new_name.to_string(), key.1), h);
+            }
+        }
+
+        // Re-key column widths.
+        let cw_keys: Vec<(String, u16)> = self
+            .col_widths
+            .keys()
+            .filter(|(s, _)| s == old_name)
+            .cloned()
+            .collect();
+        for key in cw_keys {
+            if let Some(w) = self.col_widths.remove(&key) {
+                self.col_widths.insert((new_name.to_string(), key.1), w);
+            }
+        }
+
+        // Re-key merge ranges.
+        for mr in &mut self.merge_ranges {
+            if mr.sheet == old_name {
+                mr.sheet = new_name.to_string();
+            }
+        }
+
+        // Re-key hyperlinks, comments, conditional formats, data validations, tables.
+        for h in &mut self.hyperlinks {
+            if h.sheet == old_name {
+                h.sheet = new_name.to_string();
+            }
+        }
+        for c in &mut self.comments {
+            if c.sheet == old_name {
+                c.sheet = new_name.to_string();
+            }
+        }
+        if let Some(pane) = self.panes.remove(old_name) {
+            self.panes.insert(new_name.to_string(), pane);
+        }
+        for cf in &mut self.conditional_formats {
+            if cf.sheet == old_name {
+                cf.sheet = new_name.to_string();
+            }
+        }
+        for dv in &mut self.data_validations {
+            if dv.sheet == old_name {
+                dv.sheet = new_name.to_string();
+            }
+        }
+        for t in &mut self.tables {
+            if t.sheet == old_name {
+                t.sheet = new_name.to_string();
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn write_cell_value(
         &mut self,
         sheet: &str,
