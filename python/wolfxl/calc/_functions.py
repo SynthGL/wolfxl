@@ -10,7 +10,6 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
-
 # ---------------------------------------------------------------------------
 # ExcelError: typed error values that propagate through formula chains
 # ---------------------------------------------------------------------------
@@ -567,7 +566,7 @@ def _parse_criteria(criteria: Any) -> Callable[[Any], bool]:
 
     # Plain string exact match (case-insensitive)
     lower = crit_str.lower()
-    return lambda v, l=lower: str(v).lower() == l if v is not None else False
+    return lambda v, lo=lower: str(v).lower() == lo if v is not None else False
 
 
 def _match_criteria(criteria: Any, value: Any) -> bool:
@@ -702,7 +701,7 @@ def _xlookup_wildcard_match(pattern: str, text: str) -> bool:
 
 
 def _builtin_xlookup(args: list[Any]) -> Any:
-    """XLOOKUP(lookup_value, lookup_array, return_array, [if_not_found], [match_mode], [search_mode]).
+    """XLOOKUP(lookup_value, lookup_array, return_array, ...).
 
     match_mode: 0=exact (default), -1=next smaller, 1=next larger, 2=wildcard.
     search_mode: 1=first-to-last (default), -1=last-to-first.
@@ -734,7 +733,10 @@ def _builtin_xlookup(args: list[Any]) -> Any:
     else:
         return if_not_found
 
-    search_range = range(len(lookup_vals)) if search_mode == 1 else range(len(lookup_vals) - 1, -1, -1)
+    if search_mode == 1:
+        search_range = range(len(lookup_vals))
+    else:
+        search_range = range(len(lookup_vals) - 1, -1, -1)
 
     def _safe_return(idx: int) -> Any:
         return return_vals[idx] if idx < len(return_vals) else if_not_found

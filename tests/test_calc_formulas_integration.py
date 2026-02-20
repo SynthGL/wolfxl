@@ -7,9 +7,9 @@ the builtin registry, and that the new math/text builtins work correctly.
 from __future__ import annotations
 
 import pytest
+from wolfxl.calc._evaluator import WorkbookEvaluator
 
 import wolfxl
-from wolfxl.calc._evaluator import WorkbookEvaluator
 
 _has_formulas = pytest.importorskip is not None  # always True, but we check below
 try:

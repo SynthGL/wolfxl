@@ -8,12 +8,10 @@ chains.
 
 from __future__ import annotations
 
-import pytest
-
-import wolfxl
 from wolfxl.calc._evaluator import WorkbookEvaluator
 from wolfxl.calc._functions import RangeValue, _match_criteria, _parse_criteria
 
+import wolfxl
 
 # ---------------------------------------------------------------------------
 # Helper: build workbook with data + formulas

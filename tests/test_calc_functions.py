@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from wolfxl.calc._functions import (
-    ExcelError,
-    RangeValue,
     _BUILTINS,
     FUNCTION_WHITELIST_V1,
+    ExcelError,
     FunctionRegistry,
+    RangeValue,
     first_error,
     is_error,
     is_supported,
@@ -532,7 +534,6 @@ class TestDateSerialRoundtrip:
 
 class TestBuiltinTODAY:
     def test_returns_serial(self) -> None:
-        import datetime
 
         result = _BUILTINS["TODAY"]([])
         # Should be a reasonable serial number for today
@@ -541,6 +542,7 @@ class TestBuiltinTODAY:
 
     def test_matches_current_date(self) -> None:
         import datetime
+
         from wolfxl.calc._functions import _serial_to_date
 
         serial = _BUILTINS["TODAY"]([])
@@ -574,7 +576,7 @@ class TestBuiltinDATE:
         assert result == expected
 
 
-class TestBuiltinYEAR_MONTH_DAY:
+class TestBuiltinYearMonthDay:
     def test_year(self) -> None:
         serial = _BUILTINS["DATE"]([2024, 6, 15])
         assert _BUILTINS["YEAR"]([serial]) == 2024

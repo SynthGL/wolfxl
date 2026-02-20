@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from collections import deque
 from typing import TYPE_CHECKING
-
-import re
 
 from wolfxl.calc._parser import all_references
 
