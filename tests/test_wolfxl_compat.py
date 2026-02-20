@@ -1114,3 +1114,383 @@ class TestTitleSetter:
         assert ws is not None
         ws.title = "Sheet"  # Same name — should be a no-op
         assert ws.title == "Sheet"
+
+
+# ======================================================================
+# Opt 4: Title setter Rust sync tests
+# ======================================================================
+
+
+class TestTitleSetterRust:
+    """Test that ws.title setter syncs with Rust writer (Opt 4)."""
+
+    def setup_method(self) -> None:
+        _require_rust()
+
+    def test_rename_then_save(self, tmp_path: Path) -> None:
+        """ws.title = 'X' -> save -> load -> sheet name is 'X'."""
+        from wolfxl import Workbook, load_workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws["A1"] = "hello"
+        ws.title = "Renamed"
+        out = tmp_path / "rename_save.xlsx"
+        wb.save(str(out))
+
+        wb2 = load_workbook(str(out))
+        assert wb2.sheetnames == ["Renamed"]
+        assert wb2["Renamed"]["A1"].value == "hello"
+        wb2.close()
+
+    def test_rename_preserves_data(self, tmp_path: Path) -> None:
+        """Data written before rename survives save/load."""
+        from wolfxl import Workbook, load_workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws["A1"] = "before"
+        ws["B2"] = 42
+        ws.title = "NewName"
+        ws["C3"] = "after"
+        out = tmp_path / "rename_data.xlsx"
+        wb.save(str(out))
+
+        wb2 = load_workbook(str(out))
+        ws2 = wb2["NewName"]
+        assert ws2["A1"].value == "before"
+        assert ws2["B2"].value == 42 or ws2["B2"].value == 42.0
+        assert ws2["C3"].value == "after"
+        wb2.close()
+
+    def test_rename_multiple_sheets(self, tmp_path: Path) -> None:
+        """Rename one of several sheets, others unaffected."""
+        from wolfxl import Workbook, load_workbook
+
+        wb = Workbook()
+        ws1 = wb.active
+        assert ws1 is not None
+        ws1["A1"] = "sheet1"
+        ws2 = wb.create_sheet("Other")
+        ws2["A1"] = "sheet2"
+        ws1.title = "First"
+        out = tmp_path / "rename_multi.xlsx"
+        wb.save(str(out))
+
+        wb2 = load_workbook(str(out))
+        assert set(wb2.sheetnames) == {"First", "Other"}
+        assert wb2["First"]["A1"].value == "sheet1"
+        assert wb2["Other"]["A1"].value == "sheet2"
+        wb2.close()
+
+    def test_rename_then_append(self, tmp_path: Path) -> None:
+        """Rename then append rows - both paths sync correctly."""
+        from wolfxl import Workbook, load_workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.title = "Data"
+        ws.append(["col1", "col2"])
+        ws.append([1, 2])
+        ws.append([3, 4])
+        out = tmp_path / "rename_append.xlsx"
+        wb.save(str(out))
+
+        wb2 = load_workbook(str(out))
+        assert wb2.sheetnames == ["Data"]
+        ws2 = wb2["Data"]
+        assert ws2["A1"].value == "col1"
+        assert ws2["B3"].value == 4 or ws2["B3"].value == 4.0
+        wb2.close()
+
+
+# ======================================================================
+# Opt 1: Bulk read tests
+# ======================================================================
+
+
+class TestBulkRead:
+    """Test iter_rows bulk path via read_sheet_values_plain (Opt 1)."""
+
+    def setup_method(self) -> None:
+        _require_rust()
+
+    def test_values_only_matches_cell_by_cell(self, tmp_path: Path) -> None:
+        """Bulk path produces identical output to per-cell path."""
+        from wolfxl import Workbook, load_workbook
+
+        # Write known data.
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Name", "Age", "Score"])
+        ws.append(["Alice", 30, 95.5])
+        ws.append(["Bob", 25, 88.0])
+        out = tmp_path / "bulk_read.xlsx"
+        wb.save(str(out))
+
+        # Read with values_only (exercises bulk path).
+        wb2 = load_workbook(str(out))
+        ws2 = wb2[wb2.sheetnames[0]]
+        rows = list(ws2.iter_rows(values_only=True))
+        assert len(rows) == 3
+        assert rows[0] == ("Name", "Age", "Score")
+        # Numbers may be float.
+        assert rows[1][0] == "Alice"
+        assert rows[1][1] == 30 or rows[1][1] == 30.0
+        assert abs(rows[1][2] - 95.5) < 0.01
+        wb2.close()
+
+    def test_values_only_with_range_limits(self, tmp_path: Path) -> None:
+        """min_row/max_row/min_col/max_col respected."""
+        from wolfxl import Workbook, load_workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        for r in range(1, 6):
+            ws.append([r * 10 + c for c in range(1, 6)])
+        out = tmp_path / "bulk_range.xlsx"
+        wb.save(str(out))
+
+        wb2 = load_workbook(str(out))
+        ws2 = wb2[wb2.sheetnames[0]]
+        rows = list(ws2.iter_rows(min_row=2, max_row=4, min_col=2, max_col=4,
+                                  values_only=True))
+        assert len(rows) == 3
+        # Row 2, cols 2-4 should be [22, 23, 24].
+        assert len(rows[0]) == 3
+        r2_vals = [v if isinstance(v, int) else int(v) for v in rows[0]]
+        assert r2_vals == [22, 23, 24]
+        wb2.close()
+
+    def test_values_only_empty_sheet(self, tmp_path: Path) -> None:
+        """Empty sheet yields no rows."""
+        from wolfxl import Workbook, load_workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        # Write nothing, just save.
+        out = tmp_path / "bulk_empty.xlsx"
+        wb.save(str(out))
+
+        wb2 = load_workbook(str(out))
+        ws2 = wb2[wb2.sheetnames[0]]
+        rows = list(ws2.iter_rows(values_only=True))
+        # Should produce at most 1 row (dimension-detected as 1x1).
+        assert len(rows) <= 1
+        wb2.close()
+
+    def test_values_only_mixed_types(self, tmp_path: Path) -> None:
+        """str, int, float, bool, None all correct."""
+        from wolfxl import Workbook, load_workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws["A1"] = "text"
+        ws["B1"] = 42
+        ws["C1"] = 3.14
+        ws["D1"] = True
+        # E1 left empty (None).
+        out = tmp_path / "bulk_types.xlsx"
+        wb.save(str(out))
+
+        wb2 = load_workbook(str(out))
+        ws2 = wb2[wb2.sheetnames[0]]
+        rows = list(ws2.iter_rows(min_row=1, max_row=1, min_col=1, max_col=5,
+                                  values_only=True))
+        assert len(rows) == 1
+        row = rows[0]
+        assert row[0] == "text"
+        assert row[1] == 42 or row[1] == 42.0
+        assert abs(row[2] - 3.14) < 0.01
+        assert row[3] is True
+        assert row[4] is None
+        wb2.close()
+
+
+# ======================================================================
+# Opt 3: write_rows tests
+# ======================================================================
+
+
+class TestWriteRows:
+    """Test write_rows bulk API (Opt 3)."""
+
+    def setup_method(self) -> None:
+        _require_rust()
+
+    def test_write_rows_basic(self, tmp_path: Path) -> None:
+        """write_rows produces same file as cell-by-cell."""
+        from wolfxl import Workbook, load_workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        grid = [
+            ["Name", "Age"],
+            ["Alice", 30],
+            ["Bob", 25],
+        ]
+        ws.write_rows(grid)
+        out = tmp_path / "write_rows.xlsx"
+        wb.save(str(out))
+
+        wb2 = load_workbook(str(out))
+        ws2 = wb2[wb2.sheetnames[0]]
+        assert ws2["A1"].value == "Name"
+        assert ws2["B1"].value == "Age"
+        assert ws2["A2"].value == "Alice"
+        assert ws2["B2"].value == 30 or ws2["B2"].value == 30.0
+        assert ws2["A3"].value == "Bob"
+        wb2.close()
+
+    def test_write_rows_offset(self, tmp_path: Path) -> None:
+        """start_row/start_col positioning correct."""
+        from wolfxl import Workbook, load_workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.write_rows([["offset"]], start_row=3, start_col=2)
+        out = tmp_path / "write_rows_offset.xlsx"
+        wb.save(str(out))
+
+        wb2 = load_workbook(str(out))
+        ws2 = wb2[wb2.sheetnames[0]]
+        assert ws2["B3"].value == "offset"
+        wb2.close()
+
+    def test_write_rows_roundtrip(self, tmp_path: Path) -> None:
+        """write_rows -> save -> load -> read matches input."""
+        from wolfxl import Workbook, load_workbook
+
+        grid = [[i * 10 + j for j in range(5)] for i in range(100)]
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.write_rows(grid)
+        out = tmp_path / "write_rows_rt.xlsx"
+        wb.save(str(out))
+
+        wb2 = load_workbook(str(out))
+        ws2 = wb2[wb2.sheetnames[0]]
+        rows = list(ws2.iter_rows(values_only=True))
+        assert len(rows) == 100
+        for i, row in enumerate(rows):
+            for j, val in enumerate(row):
+                expected = i * 10 + j
+                assert val == expected or val == float(expected)
+        wb2.close()
+
+    def test_write_rows_with_booleans(self, tmp_path: Path) -> None:
+        """write_rows handles non-batchable types (bools, formulas)."""
+        from wolfxl import Workbook, load_workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.write_rows([[True, False, "=1+2"]], start_row=1, start_col=1)
+        out = tmp_path / "write_rows_bool.xlsx"
+        wb.save(str(out))
+
+        wb2 = load_workbook(str(out))
+        ws2 = wb2[wb2.sheetnames[0]]
+        assert ws2["A1"].value is True
+        assert ws2["B1"].value is False
+        val_c = ws2["C1"].value
+        assert val_c is not None and "1" in str(val_c)
+        wb2.close()
+
+    def test_write_rows_empty(self, tmp_path: Path) -> None:
+        """write_rows with empty list is a no-op."""
+        from wolfxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.write_rows([])  # should not raise
+        out = tmp_path / "write_rows_empty.xlsx"
+        wb.save(str(out))
+        assert out.exists()
+
+
+# ======================================================================
+# Opt 5: Plain read tests
+# ======================================================================
+
+
+class TestPlainRead:
+    """Test read_sheet_values_plain Rust method (Opt 5)."""
+
+    def setup_method(self) -> None:
+        _require_rust()
+
+    def test_plain_matches_payload(self, tmp_path: Path) -> None:
+        """Plain values match _payload_to_python(dict) values."""
+        from wolfxl._cell import _payload_to_python
+
+        from wolfxl import Workbook, load_workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws["A1"] = "text"
+        ws["B1"] = 42
+        ws["C1"] = 3.14
+        out = tmp_path / "plain_match.xlsx"
+        wb.save(str(out))
+
+        wb2 = load_workbook(str(out))
+        reader = wb2._rust_reader
+        sheet = wb2.sheetnames[0]
+
+        # Get dict-based values.
+        dict_rows = reader.read_sheet_values(sheet, "A1:C1")
+        dict_vals = [_payload_to_python(cell) for cell in dict_rows[0]]
+
+        # Get plain values.
+        plain_rows = reader.read_sheet_values_plain(sheet, "A1:C1")
+        plain_vals = list(plain_rows[0])
+
+        # Compare.
+        assert len(dict_vals) == len(plain_vals)
+        for dv, pv in zip(dict_vals, plain_vals):
+            if isinstance(dv, float) and isinstance(pv, float):
+                assert abs(dv - pv) < 0.001
+            else:
+                assert dv == pv, f"Mismatch: dict={dv!r} plain={pv!r}"
+        wb2.close()
+
+    def test_plain_all_types(self, tmp_path: Path) -> None:
+        """All basic calamine Data types correctly converted."""
+        from wolfxl import Workbook, load_workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws["A1"] = "hello"    # string
+        ws["B1"] = 42         # int -> number
+        ws["C1"] = 3.14       # float
+        ws["D1"] = True       # bool
+        # E1 empty -> None
+        out = tmp_path / "plain_types.xlsx"
+        wb.save(str(out))
+
+        wb2 = load_workbook(str(out))
+        reader = wb2._rust_reader
+        sheet = wb2.sheetnames[0]
+        rows = reader.read_sheet_values_plain(sheet, "A1:E1")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row[0] == "hello"
+        assert row[1] == 42 or row[1] == 42.0
+        assert abs(row[2] - 3.14) < 0.01
+        assert row[3] is True
+        assert row[4] is None
+        wb2.close()

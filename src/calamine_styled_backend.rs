@@ -1,6 +1,6 @@
 use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyDate, PyDateTime, PyDict, PyList};
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -12,7 +12,7 @@ use calamine_styles::{
     VerticalAlignment, WorksheetLayout,
 };
 use calamine_styles::{Data, Range, Reader, Xlsx};
-use chrono::NaiveTime;
+use chrono::{Datelike, NaiveTime, Timelike};
 
 use quick_xml::events::Event;
 use quick_xml::Reader as XmlReader;
@@ -177,6 +177,65 @@ fn data_to_py(py: Python<'_>, value: &Data) -> PyResult<PyObject> {
             d.set_item("type", "error")?;
             d.set_item("value", normalized)?;
             Ok(d.into())
+        }
+    }
+}
+
+/// Convert a calamine Data value to a plain Python object (no dict wrapper).
+///
+/// Returns str, float, int, bool, None, datetime.date, or datetime.datetime.
+fn data_to_plain_py(py: Python<'_>, value: &Data) -> PyResult<PyObject> {
+    match value {
+        Data::Empty => Ok(py.None()),
+        Data::String(s) => Ok(s.to_object(py)),
+        Data::Float(f) => Ok(f.to_object(py)),
+        Data::Int(i) => Ok(i.to_object(py)),
+        Data::Bool(b) => Ok(b.to_object(py)),
+        Data::DateTime(dt) => {
+            if let Some(ndt) = dt.as_datetime() {
+                let midnight = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+                if ndt.time() == midnight {
+                    let d = PyDate::new(py, ndt.year(), ndt.month() as u8, ndt.day() as u8)?;
+                    Ok(d.into_any().unbind())
+                } else {
+                    let d = PyDateTime::new(
+                        py, ndt.year(), ndt.month() as u8, ndt.day() as u8,
+                        ndt.hour() as u8, ndt.minute() as u8, ndt.second() as u8,
+                        0, None,
+                    )?;
+                    Ok(d.into_any().unbind())
+                }
+            } else {
+                Ok(dt.as_f64().to_object(py))
+            }
+        }
+        Data::DateTimeIso(s) => {
+            let raw = s.trim_end_matches('Z');
+            if let Some(d) = parse_iso_date(raw) {
+                let pydate = PyDate::new(py, d.year(), d.month() as u8, d.day() as u8)?;
+                Ok(pydate.into_any().unbind())
+            } else if let Some(ndt) = parse_iso_datetime(raw) {
+                let midnight = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+                if ndt.time() == midnight {
+                    let pydate = PyDate::new(py, ndt.year(), ndt.month() as u8, ndt.day() as u8)?;
+                    Ok(pydate.into_any().unbind())
+                } else {
+                    let pydt = PyDateTime::new(
+                        py, ndt.year(), ndt.month() as u8, ndt.day() as u8,
+                        ndt.hour() as u8, ndt.minute() as u8, ndt.second() as u8,
+                        0, None,
+                    )?;
+                    Ok(pydt.into_any().unbind())
+                }
+            } else {
+                Ok(s.to_object(py))
+            }
+        }
+        Data::DurationIso(s) => Ok(s.to_object(py)),
+        Data::RichText(rt) => Ok(rt.plain_text().to_object(py)),
+        Data::Error(e) => {
+            let normalized = map_error_value(&format!("{e:?}"));
+            Ok(normalized.to_object(py))
         }
     }
 }
@@ -469,6 +528,96 @@ impl CalamineStyledBook {
                 match range.get_value((row, col)) {
                     None => inner.append(cell_blank(py)?)?,
                     Some(v) => inner.append(data_to_py(py, v)?)?,
+                }
+            }
+            outer.append(inner)?;
+        }
+
+        Ok(outer.into())
+    }
+
+    /// Bulk-read cell values as plain Python objects (no dict wrappers).
+    ///
+    /// Returns `list[list[PyObject]]` where each element is a native Python
+    /// value: str, float, int, bool, None, or ISO date/datetime string.
+    /// Formulas are returned as their formula text (with `=` prefix).
+    /// Used by the `values_only=True` fast path to avoid 140K dict allocations.
+    pub fn read_sheet_values_plain(
+        &mut self,
+        py: Python<'_>,
+        sheet: &str,
+        cell_range: Option<&str>,
+    ) -> PyResult<PyObject> {
+        self.ensure_sheet_exists(sheet)?;
+        self.ensure_value_caches(sheet)?;
+
+        let range = self.range_cache.get(sheet).unwrap();
+
+        let (start_row, start_col, end_row, end_col) = if let Some(cr) = cell_range {
+            if !cr.is_empty() {
+                let clean = cr.replace('$', "").to_ascii_uppercase();
+                let parts: Vec<&str> = clean.split(':').collect();
+                let a = parts[0];
+                let b = if parts.len() > 1 { parts[1] } else { a };
+                let (r0, c0) =
+                    a1_to_row_col(a).map_err(|msg| PyErr::new::<PyValueError, _>(msg))?;
+                let (r1, c1) =
+                    a1_to_row_col(b).map_err(|msg| PyErr::new::<PyValueError, _>(msg))?;
+                (r0.min(r1), c0.min(c1), r0.max(r1), c0.max(c1))
+            } else {
+                let (h, w) = range.get_size();
+                let start = range.start().unwrap_or((0, 0));
+                (
+                    start.0,
+                    start.1,
+                    start.0 + h as u32 - 1,
+                    start.1 + w as u32 - 1,
+                )
+            }
+        } else {
+            let (h, w) = range.get_size();
+            if h == 0 || w == 0 {
+                return Ok(PyList::empty(py).into());
+            }
+            let start = range.start().unwrap_or((0, 0));
+            (
+                start.0,
+                start.1,
+                start.0 + h as u32 - 1,
+                start.1 + w as u32 - 1,
+            )
+        };
+
+        let fmap = self.formula_map_cache.get(sheet);
+
+        let outer = PyList::empty(py);
+        for row in start_row..=end_row {
+            let inner = PyList::empty(py);
+            for col in start_col..=end_col {
+                // Check formula map first.
+                if let Some(ref fm) = fmap {
+                    if let Some(f) = fm.get(&(row, col)) {
+                        let formula = if f.starts_with('=') {
+                            f.clone()
+                        } else {
+                            format!("={f}")
+                        };
+                        // For error-producing formulas, return the error string.
+                        if let Some(err_val) = map_error_formula(&formula) {
+                            inner.append(err_val)?;
+                        } else {
+                            inner.append(&formula)?;
+                        }
+                        continue;
+                    }
+                }
+                // Convert Data directly to plain Python values.
+                match range.get_value((row, col)) {
+                    None => inner.append(py.None())?,
+                    Some(v) => {
+                        let obj = data_to_plain_py(py, v)?;
+                        inner.append(obj)?;
+                    }
                 }
             }
             outer.append(inner)?;

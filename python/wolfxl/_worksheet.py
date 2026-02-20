@@ -18,7 +18,7 @@ class Worksheet:
     __slots__ = (
         "_workbook", "_title", "_cells", "_dirty", "_dimensions",
         "_max_col_idx", "_next_append_row",
-        "_append_buffer", "_append_buffer_start",
+        "_append_buffer", "_append_buffer_start", "_bulk_writes",
     )
 
     def __init__(self, workbook: Workbook, title: str) -> None:
@@ -32,6 +32,8 @@ class Worksheet:
         # Fast-path append buffer: raw value lists, no Cell objects.
         self._append_buffer: list[list[Any]] = []
         self._append_buffer_start: int = 1
+        # Bulk write buffer: list of (grid, start_row, start_col) tuples.
+        self._bulk_writes: list[tuple[list[list[Any]], int, int]] = []
 
     @property
     def title(self) -> str:
@@ -51,6 +53,9 @@ class Worksheet:
         wb._sheet_names[idx] = value  # noqa: SLF001
         wb._sheets[value] = wb._sheets.pop(old)  # noqa: SLF001
         self._title = value
+        # Sync the Rust writer so ensure_sheet_exists() sees the new name.
+        if wb._rust_writer is not None:  # noqa: SLF001
+            wb._rust_writer.rename_sheet(old, value)  # noqa: SLF001
 
     # ------------------------------------------------------------------
     # Cell access
@@ -131,6 +136,64 @@ class Worksheet:
                 self.cell(row=r, column=c, value=val)
         # Buffer is already cleared above.
 
+    def write_rows(
+        self,
+        rows: list[list[Any]],
+        start_row: int = 1,
+        start_col: int = 1,
+    ) -> None:
+        """Bulk-write a 2D grid of values starting at (start_row, start_col).
+
+        Unlike ``append()``, this writes to an arbitrary position. Values are
+        buffered and flushed via a single ``write_sheet_values()`` Rust call
+        at save time, avoiding per-cell FFI overhead.
+
+        ``rows`` is a list of lists. Each inner list is one row of values.
+        """
+        if not rows:
+            return
+        # Store a shallow copy so flush can safely mutate without affecting caller.
+        copied = [list(row) for row in rows]
+        self._bulk_writes.append((copied, start_row, start_col))
+
+    def _materialize_bulk_writes(self) -> None:
+        """Convert bulk write buffers into Cell objects.
+
+        Called before the patcher flush path which has no batch API and
+        needs all values as individual dirty cells.
+        """
+        writes = self._bulk_writes
+        if not writes:
+            return
+        self._bulk_writes = []
+        for grid, sr, sc in writes:
+            for ri, row in enumerate(grid):
+                for ci, val in enumerate(row):
+                    if val is not None:
+                        self.cell(row=sr + ri, column=sc + ci, value=val)
+
+    @staticmethod
+    def _extract_non_batchable(
+        grid: list[list[Any]], start_row: int, start_col: int,
+    ) -> list[tuple[int, int, Any]]:
+        """Extract non-batchable values from grid, replacing them with None.
+
+        Non-batchable: booleans, formulas (str starting with '='), and
+        non-primitive types (dates, datetimes, etc.).  These require
+        per-cell ``write_cell_value()`` calls with type-preserving payloads.
+        """
+        indiv: list[tuple[int, int, Any]] = []
+        for ri, row in enumerate(grid):
+            for ci, val in enumerate(row):
+                if val is not None and (
+                    isinstance(val, bool)
+                    or (isinstance(val, str) and val.startswith("="))
+                    or not isinstance(val, (int, float, str))
+                ):
+                    indiv.append((start_row + ri, start_col + ci, val))
+                    row[ci] = None
+        return indiv
+
     # ------------------------------------------------------------------
     # Iteration
     # ------------------------------------------------------------------
@@ -144,6 +207,11 @@ class Worksheet:
         values_only: bool = False,
     ) -> Iterator[tuple[Any, ...]]:
         """Iterate over rows in a range. Matches openpyxl's iter_rows API."""
+        # Fast bulk path: read-mode + values_only -> single Rust FFI call.
+        if values_only and self._workbook._rust_reader is not None:  # noqa: SLF001
+            yield from self._iter_rows_bulk(min_row, max_row, min_col, max_col)
+            return
+
         r_min = min_row or 1
         r_max = max_row or self._max_row()
         c_min = min_col or 1
@@ -158,6 +226,61 @@ class Worksheet:
                 yield tuple(
                     self._get_or_create_cell(r, c) for c in range(c_min, c_max + 1)
                 )
+
+    def _iter_rows_bulk(
+        self,
+        min_row: int | None,
+        max_row: int | None,
+        min_col: int | None,
+        max_col: int | None,
+    ) -> Iterator[tuple[Any, ...]]:
+        """Bulk-read values via a single Rust FFI call (values_only fast path).
+
+        Uses ``read_sheet_values_plain()`` when available (returns native
+        Python objects), falling back to ``read_sheet_values()`` + per-cell
+        ``_payload_to_python()`` conversion otherwise.
+        """
+        from wolfxl._cell import _payload_to_python
+
+        reader = self._workbook._rust_reader  # noqa: SLF001
+        sheet = self._title
+
+        # Build an A1:B2-style range string for Rust.
+        r_min = min_row or 1
+        r_max = max_row or self._max_row()
+        c_min = min_col or 1
+        c_max = max_col or self._max_col()
+        range_str = f"{rowcol_to_a1(r_min, c_min)}:{rowcol_to_a1(r_max, c_max)}"
+
+        # Prefer plain-value read (no dict overhead) if available.
+        use_plain = hasattr(reader, "read_sheet_values_plain")
+        if use_plain:
+            rows = reader.read_sheet_values_plain(sheet, range_str)
+        else:
+            rows = reader.read_sheet_values(sheet, range_str)
+
+        if not rows:
+            return
+
+        # The Rust range returns exactly the rows/cols we asked for,
+        # so no Python-side slicing is needed.
+        expected_cols = c_max - c_min + 1
+        for row in rows:
+            if use_plain:
+                # Already native Python values; pad/trim to expected width.
+                n = len(row)
+                if n >= expected_cols:
+                    yield tuple(row[:expected_cols])
+                else:
+                    yield tuple(row) + (None,) * (expected_cols - n)
+            else:
+                # Dict payloads need conversion.
+                vals = [_payload_to_python(cell) for cell in row]
+                n = len(vals)
+                if n >= expected_cols:
+                    yield tuple(vals[:expected_cols])
+                else:
+                    yield tuple(vals) + (None,) * (expected_cols - n)
 
     def _read_dimensions(self) -> tuple[int, int]:
         """Discover sheet dimensions from the Rust backend (read mode only)."""
@@ -220,10 +343,12 @@ class Worksheet:
         writer = wb._rust_writer  # noqa: SLF001
 
         if patcher is not None:
-            # Modify mode: materialize append buffer first (patcher has no
-            # batch API), then flush dirty cells individually.
+            # Modify mode: materialize buffers first (patcher has no batch
+            # API), then flush dirty cells individually.
             if self._append_buffer:
                 self._materialize_append_buffer()
+            if self._bulk_writes:
+                self._materialize_bulk_writes()
             self._flush_to_patcher(patcher, python_value_to_payload,
                                    font_to_format_dict, fill_to_format_dict,
                                    alignment_to_format_dict, border_to_rust_dict)
@@ -257,18 +382,7 @@ class Worksheet:
             start_row = self._append_buffer_start
             start_a1 = rowcol_to_a1(start_row, 1)
 
-            # Scan for non-batchable values and replace with None in the grid.
-            # Non-batchable values get individual write_cell_value calls after.
-            indiv_from_buf: list[tuple[int, int, Any]] = []
-            for ri, row in enumerate(buf):
-                for ci, val in enumerate(row):
-                    if val is not None and (
-                        isinstance(val, bool)
-                        or (isinstance(val, str) and val.startswith("="))
-                        or not isinstance(val, (int, float, str))
-                    ):
-                        indiv_from_buf.append((start_row + ri, ci + 1, val))
-                        row[ci] = None  # will be skipped by write_sheet_values
+            indiv_from_buf = self._extract_non_batchable(buf, start_row, 1)
 
             writer.write_sheet_values(self._title, start_a1, buf)
 
@@ -278,6 +392,17 @@ class Worksheet:
                 writer.write_cell_value(self._title, coord, payload)
 
             self._append_buffer = []
+
+        # -- Flush bulk writes (write_rows) -----------------------------------
+        for grid, sr, sc in self._bulk_writes:
+            start_a1 = rowcol_to_a1(sr, sc)
+            indiv_from_bulk = self._extract_non_batchable(grid, sr, sc)
+            writer.write_sheet_values(self._title, start_a1, grid)
+            for r, c, val in indiv_from_bulk:
+                coord = rowcol_to_a1(r, c)
+                payload = python_value_to_payload(val)
+                writer.write_cell_value(self._title, coord, payload)
+        self._bulk_writes = []
 
         # -- Partition dirty cells into batch-eligible values vs individual ----
         #
