@@ -330,8 +330,8 @@ class TestFormulasFallbackPerturbation:
 
 
 class TestBuiltinRegistryCoverage:
-    def test_25_builtins_registered(self) -> None:
-        """All 25 builtin functions should be in the registry."""
+    def test_33_builtins_registered(self) -> None:
+        """All 33 builtin functions should be in the registry."""
         from wolfxl.calc._functions import FunctionRegistry
 
         reg = FunctionRegistry()
@@ -341,6 +341,8 @@ class TestBuiltinRegistryCoverage:
             "IF", "IFERROR", "AND", "OR", "NOT",
             "COUNT", "COUNTA", "MIN", "MAX", "AVERAGE",
             "LEFT", "RIGHT", "MID", "LEN", "CONCATENATE",
+            "INDEX", "MATCH", "XLOOKUP", "CHOOSE",
+            "SUMIF", "SUMIFS", "COUNTIF", "COUNTIFS",
         }
         assert expected == reg.supported_functions
 
@@ -353,6 +355,8 @@ class TestBuiltinRegistryCoverage:
             "IF", "IFERROR", "AND", "OR", "NOT",
             "COUNT", "COUNTA", "MIN", "MAX", "AVERAGE",
             "LEFT", "RIGHT", "MID", "LEN", "CONCATENATE",
+            "INDEX", "MATCH", "XLOOKUP", "CHOOSE",
+            "SUMIF", "SUMIFS", "COUNTIF", "COUNTIFS",
         ]:
             assert ev._functions.has(name), f"Missing builtin: {name}"
 

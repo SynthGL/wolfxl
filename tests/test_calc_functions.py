@@ -12,8 +12,8 @@ from wolfxl.calc._functions import (
 
 
 class TestWhitelist:
-    def test_whitelist_has_39_functions(self) -> None:
-        assert len(FUNCTION_WHITELIST_V1) == 39
+    def test_whitelist_has_43_functions(self) -> None:
+        assert len(FUNCTION_WHITELIST_V1) == 43
 
     def test_all_categories_represented(self) -> None:
         categories = set(FUNCTION_WHITELIST_V1.values())

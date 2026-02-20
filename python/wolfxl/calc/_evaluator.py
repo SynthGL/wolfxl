@@ -15,7 +15,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
-from wolfxl.calc._functions import FunctionRegistry
+from wolfxl.calc._functions import FunctionRegistry, RangeValue
 from wolfxl.calc._graph import DependencyGraph
 from wolfxl.calc._parser import expand_range, range_shape
 from wolfxl.calc._protocol import CellDelta, RecalcResult
@@ -143,7 +143,7 @@ def _find_top_level_split(expr: str) -> tuple[str, str, str] | None:
                     matched_op = ch
                 elif ch == '=' and not (i >= 1 and expr[i - 1] in ('>', '<', '!')):
                     matched_op = ch
-            elif pass_type == "add" and ch in ('+', '-'):
+            elif pass_type == "add" and ch in ('+', '-', '&'):
                 matched_op = ch
             elif pass_type == "mul" and ch in ('*', '/'):
                 matched_op = ch
@@ -191,7 +191,9 @@ def _has_top_level_colon(expr: str) -> bool:
 
 
 def _binary_op(left: Any, op: str, right: Any) -> Any:
-    """Evaluate an arithmetic binary operation."""
+    """Evaluate an arithmetic or string binary operation."""
+    if op == '&':
+        return str(left if left is not None else "") + str(right if right is not None else "")
     if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
         return None
     if op == '+':
@@ -427,7 +429,7 @@ class WorkbookEvaluator:
             left_str, op, right_str = split
             left_val = self._eval_expr(left_str, sheet)
             right_val = self._eval_expr(right_str, sheet)
-            if op in ('+', '-', '*', '/'):
+            if op in ('+', '-', '*', '/', '&'):
                 return _binary_op(left_val, op, right_val)
             return _compare(left_val, right_val, op)
 
@@ -492,7 +494,10 @@ class WorkbookEvaluator:
         return self._cell_values.get(ref)
 
     def _resolve_range(self, arg: str, sheet: str) -> list[Any]:
-        """Resolve a range like ``A1:A5`` to a list of cell values."""
+        """Resolve a range like ``A1:A5`` to a flat list of cell values.
+
+        Kept for the ``formulas`` library fallback which needs flat lists.
+        """
         clean = arg.strip().replace('$', '')
         if '!' not in clean:
             range_ref = f"{sheet}!{clean.upper()}"
@@ -502,6 +507,20 @@ class WorkbookEvaluator:
             range_ref = f"{ref_sheet}!{parts[1].upper()}"
         cells = expand_range(range_ref)
         return [self._cell_values.get(c) for c in cells]
+
+    def _resolve_range_2d(self, arg: str, sheet: str) -> RangeValue:
+        """Resolve a range to a :class:`RangeValue` preserving 2D shape."""
+        clean = arg.strip().replace('$', '')
+        if '!' not in clean:
+            range_ref = f"{sheet}!{clean.upper()}"
+        else:
+            parts = clean.split('!', 1)
+            ref_sheet = parts[0].strip("'")
+            range_ref = f"{ref_sheet}!{parts[1].upper()}"
+        cells = expand_range(range_ref)
+        n_rows, n_cols = range_shape(range_ref)
+        values = [self._cell_values.get(c) for c in cells]
+        return RangeValue(values=values, n_rows=n_rows, n_cols=n_cols)
 
     # ------------------------------------------------------------------
     # Function dispatch
@@ -568,15 +587,16 @@ class WorkbookEvaluator:
     def _resolve_arg(self, arg: str, sheet: str) -> Any:
         """Resolve a single function argument.
 
-        Range references (containing ``:`` at depth 0) return a list of
-        cell values.  Everything else delegates to ``_eval_expr``.
+        Range references (containing ``:`` at depth 0) return a
+        :class:`RangeValue` with 2D shape metadata.  Everything else
+        delegates to ``_eval_expr``.
         """
         if not arg:
             return None
 
         # Range reference at top level
         if _has_top_level_colon(arg) and not arg.startswith('"'):
-            return self._resolve_range(arg, sheet)
+            return self._resolve_range_2d(arg, sheet)
 
         return self._eval_expr(arg, sheet)
 
