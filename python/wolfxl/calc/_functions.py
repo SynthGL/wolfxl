@@ -306,12 +306,15 @@ def _builtin_mod(args: list[Any]) -> float:
     return nums[0] - nums[1] * math.floor(nums[0] / nums[1])
 
 
-def _builtin_power(args: list[Any]) -> float:
+def _builtin_power(args: list[Any]) -> float | str:
     if len(args) != 2:
         raise ValueError("POWER requires exactly 2 arguments")
     nums = _coerce_numeric(args)
     if len(nums) != 2:
         raise ValueError("POWER: non-numeric argument")
+    # Excel returns #NUM! for negative base with fractional exponent
+    if nums[0] < 0 and not float(nums[1]).is_integer():
+        return "#NUM!"
     return nums[0] ** nums[1]
 
 
@@ -355,6 +358,8 @@ def _builtin_left(args: list[Any]) -> str:
         raise ValueError("LEFT requires 1 or 2 arguments")
     text = _coerce_string(args[0])
     num_chars = int(_coerce_numeric([args[1]])[0]) if len(args) > 1 else 1
+    if num_chars < 0:
+        return "#VALUE!"
     return text[:num_chars]
 
 
@@ -372,6 +377,8 @@ def _builtin_mid(args: list[Any]) -> str:
     text = _coerce_string(args[0])
     start = int(_coerce_numeric([args[1]])[0])
     num_chars = int(_coerce_numeric([args[2]])[0])
+    if start < 1 or num_chars < 0:
+        return "#VALUE!"
     # Excel MID is 1-indexed
     return text[start - 1 : start - 1 + num_chars]
 

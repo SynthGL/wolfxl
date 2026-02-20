@@ -11,6 +11,17 @@ import pytest
 import wolfxl
 from wolfxl.calc._evaluator import WorkbookEvaluator
 
+_has_formulas = pytest.importorskip is not None  # always True, but we check below
+try:
+    import formulas  # noqa: F401
+    _has_formulas = True
+except ImportError:
+    _has_formulas = False
+
+_requires_formulas = pytest.mark.skipif(
+    not _has_formulas, reason="formulas library not installed (install wolfxl[calc])"
+)
+
 
 # ---------------------------------------------------------------------------
 # New builtin math functions
@@ -93,6 +104,17 @@ class TestBuiltinPower:
         results = ev.calculate()
         assert results["Sheet!B1"] == 2.0
 
+    def test_negative_base_fractional_exponent(self) -> None:
+        """POWER(-1, 0.5) should return #NUM! (complex result)."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = -1
+        ws["B1"] = "=POWER(A1,0.5)"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert results["Sheet!B1"] == "#NUM!"
+
 
 class TestBuiltinSqrt:
     def test_basic(self) -> None:
@@ -164,6 +186,17 @@ class TestBuiltinLeft:
         results = ev.calculate()
         assert results["Sheet!B1"] == "H"
 
+    def test_negative_num_chars(self) -> None:
+        """LEFT with negative count returns #VALUE!."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = "Hello"
+        ws["B1"] = "=LEFT(A1,-1)"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert results["Sheet!B1"] == "#VALUE!"
+
 
 class TestBuiltinRight:
     def test_basic(self) -> None:
@@ -187,6 +220,28 @@ class TestBuiltinMid:
         ev.load(wb)
         results = ev.calculate()
         assert results["Sheet!B1"] == "World"
+
+    def test_start_below_one(self) -> None:
+        """MID with start < 1 returns #VALUE!."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = "Hello"
+        ws["B1"] = "=MID(A1,0,3)"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert results["Sheet!B1"] == "#VALUE!"
+
+    def test_negative_num_chars(self) -> None:
+        """MID with negative num_chars returns #VALUE!."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = "Hello"
+        ws["B1"] = "=MID(A1,1,-1)"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert results["Sheet!B1"] == "#VALUE!"
 
 
 class TestBuiltinLen:
@@ -220,6 +275,7 @@ class TestBuiltinConcatenate:
 # ---------------------------------------------------------------------------
 
 
+@_requires_formulas
 class TestFormulasConstantFallback:
     """Formulas that use non-builtin functions with only literal arguments."""
 
@@ -254,6 +310,7 @@ class TestFormulasConstantFallback:
 # ---------------------------------------------------------------------------
 
 
+@_requires_formulas
 class TestFormulasCellRefFallback:
     """Formulas that use non-builtin functions with cell references."""
 
@@ -302,6 +359,7 @@ class TestFormulasCellRefFallback:
 # ---------------------------------------------------------------------------
 
 
+@_requires_formulas
 class TestFormulasFallbackPerturbation:
     """Verify perturbation propagates through formulas-lib-evaluated cells."""
 
@@ -366,6 +424,7 @@ class TestBuiltinRegistryCoverage:
 # ---------------------------------------------------------------------------
 
 
+@_requires_formulas
 class TestCombinedEvaluation:
     """Workbook mixing builtin-evaluated and formulas-lib-evaluated formulas."""
 

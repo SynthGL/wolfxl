@@ -168,8 +168,9 @@ def range_shape(range_ref: str) -> tuple[int, int]:
 
     start_row, start_col = a1_to_rowcol(parts[0].replace("$", ""))
     end_row, end_col = a1_to_rowcol(parts[1].replace("$", ""))
-    n_rows = abs(end_row - start_row) + 1
-    n_cols = abs(end_col - start_col) + 1
+    # Use min/max for consistency with expand_range()
+    n_rows = max(start_row, end_row) - min(start_row, end_row) + 1
+    n_cols = max(start_col, end_col) - min(start_col, end_col) + 1
     return (n_rows, n_cols)
 
 
