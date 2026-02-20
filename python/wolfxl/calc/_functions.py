@@ -2,11 +2,84 @@
 
 from __future__ import annotations
 
+import calendar
+import datetime
 import fnmatch
 import math
 import re
 from dataclasses import dataclass
 from typing import Any, Callable
+
+
+# ---------------------------------------------------------------------------
+# ExcelError: typed error values that propagate through formula chains
+# ---------------------------------------------------------------------------
+
+
+class ExcelError:
+    """Excel error value that propagates through formula chains.
+
+    Use ``ExcelError.of(code)`` to get a cached singleton for each error code.
+    Errors compare equal to their string code (e.g., ``ExcelError.NA == ExcelError.NA``).
+    """
+
+    __slots__ = ("code",)
+    _cache: dict[str, ExcelError] = {}
+
+    NA: ExcelError
+    VALUE: ExcelError
+    REF: ExcelError
+    DIV0: ExcelError
+    NUM: ExcelError
+    NAME: ExcelError
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+
+    @classmethod
+    def of(cls, code: str) -> ExcelError:
+        canon = code.upper()
+        if canon not in cls._cache:
+            cls._cache[canon] = cls(canon)
+        return cls._cache[canon]
+
+    def __repr__(self) -> str:
+        return self.code
+
+    def __str__(self) -> str:
+        return self.code
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, ExcelError):
+            return self.code == other.code
+        if isinstance(other, str):
+            return self.code == other.upper()
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self.code)
+
+
+# Singletons
+ExcelError.NA = ExcelError.of("#N/A")
+ExcelError.VALUE = ExcelError.of("#VALUE!")
+ExcelError.REF = ExcelError.of("#REF!")
+ExcelError.DIV0 = ExcelError.of("#DIV/0!")
+ExcelError.NUM = ExcelError.of("#NUM!")
+ExcelError.NAME = ExcelError.of("#NAME?")
+
+
+def is_error(val: Any) -> bool:
+    """Return True if *val* is an ExcelError instance."""
+    return isinstance(val, ExcelError)
+
+
+def first_error(*values: Any) -> ExcelError | None:
+    """Return the first ExcelError found in *values*, or None."""
+    for v in values:
+        if isinstance(v, ExcelError):
+            return v
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -88,14 +161,18 @@ FUNCTION_WHITELIST_V1: dict[str, str] = {
     "OFFSET": "lookup",
     "CHOOSE": "lookup",
     "XLOOKUP": "lookup",
-    # Statistical (9)
+    # Statistical (13)
     "AVERAGE": "statistical",
+    "AVERAGEIF": "statistical",
+    "AVERAGEIFS": "statistical",
     "COUNT": "statistical",
     "COUNTA": "statistical",
     "COUNTIF": "statistical",
     "COUNTIFS": "statistical",
     "MIN": "statistical",
+    "MINIFS": "statistical",
     "MAX": "statistical",
+    "MAXIFS": "statistical",
     "SUMIF": "statistical",
     "SUMIFS": "statistical",
     # Financial (7)
@@ -106,12 +183,29 @@ FUNCTION_WHITELIST_V1: dict[str, str] = {
     "IRR": "financial",
     "SLN": "financial",
     "DB": "financial",
-    # Text (5)
+    # Text (13)
     "LEFT": "text",
     "RIGHT": "text",
     "MID": "text",
     "LEN": "text",
     "CONCATENATE": "text",
+    "UPPER": "text",
+    "LOWER": "text",
+    "TRIM": "text",
+    "SUBSTITUTE": "text",
+    "TEXT": "text",
+    "REPT": "text",
+    "EXACT": "text",
+    "FIND": "text",
+    # Date (8)
+    "TODAY": "date",
+    "DATE": "date",
+    "YEAR": "date",
+    "MONTH": "date",
+    "DAY": "date",
+    "EDATE": "date",
+    "EOMONTH": "date",
+    "DAYS": "date",
 }
 
 
@@ -127,9 +221,15 @@ def is_supported(func_name: str) -> bool:
 
 
 def _coerce_numeric(values: list[Any]) -> list[float]:
-    """Flatten and coerce values to floats, skipping None/str/bool."""
+    """Flatten and coerce values to floats, skipping None/str/bool.
+
+    ExcelError values inside ranges are silently skipped (Excel SUM/AVERAGE
+    behavior).  Direct scalar errors are handled by callers.
+    """
     result: list[float] = []
     for v in values:
+        if isinstance(v, ExcelError):
+            continue  # skip errors in aggregation context
         if isinstance(v, RangeValue):
             result.extend(_coerce_numeric(v.values))
         elif isinstance(v, (list, tuple)):
@@ -139,7 +239,7 @@ def _coerce_numeric(values: list[Any]) -> list[float]:
             result.append(float(v))
         elif isinstance(v, (int, float)):
             result.append(float(v))
-        # Skip None, str, errors
+        # Skip None, str
     return result
 
 
@@ -203,7 +303,9 @@ def _builtin_iferror(args: list[Any]) -> Any:
     if len(args) != 2:
         raise ValueError("IFERROR requires exactly 2 arguments")
     value = args[0]
-    # If the value is an error string (e.g., "#DIV/0!"), return the fallback
+    # Detect ExcelError instances or legacy error strings
+    if isinstance(value, ExcelError):
+        return args[1]
     if isinstance(value, str) and value.startswith("#"):
         return args[1]
     return value
@@ -306,7 +408,7 @@ def _builtin_mod(args: list[Any]) -> float:
     return nums[0] - nums[1] * math.floor(nums[0] / nums[1])
 
 
-def _builtin_power(args: list[Any]) -> float | str:
+def _builtin_power(args: list[Any]) -> float | ExcelError:
     if len(args) != 2:
         raise ValueError("POWER requires exactly 2 arguments")
     nums = _coerce_numeric(args)
@@ -314,7 +416,7 @@ def _builtin_power(args: list[Any]) -> float | str:
         raise ValueError("POWER: non-numeric argument")
     # Excel returns #NUM! for negative base with fractional exponent
     if nums[0] < 0 and not float(nums[1]).is_integer():
-        return "#NUM!"
+        return ExcelError.NUM
     return nums[0] ** nums[1]
 
 
@@ -353,13 +455,13 @@ def _coerce_string(val: Any) -> str:
     return str(val)
 
 
-def _builtin_left(args: list[Any]) -> str:
+def _builtin_left(args: list[Any]) -> str | ExcelError:
     if len(args) < 1 or len(args) > 2:
         raise ValueError("LEFT requires 1 or 2 arguments")
     text = _coerce_string(args[0])
     num_chars = int(_coerce_numeric([args[1]])[0]) if len(args) > 1 else 1
     if num_chars < 0:
-        return "#VALUE!"
+        return ExcelError.VALUE
     return text[:num_chars]
 
 
@@ -371,14 +473,14 @@ def _builtin_right(args: list[Any]) -> str:
     return text[-num_chars:] if num_chars > 0 else ""
 
 
-def _builtin_mid(args: list[Any]) -> str:
+def _builtin_mid(args: list[Any]) -> str | ExcelError:
     if len(args) != 3:
         raise ValueError("MID requires exactly 3 arguments")
     text = _coerce_string(args[0])
     start = int(_coerce_numeric([args[1]])[0])
     num_chars = int(_coerce_numeric([args[2]])[0])
     if start < 1 or num_chars < 0:
-        return "#VALUE!"
+        return ExcelError.VALUE
     # Excel MID is 1-indexed
     return text[start - 1 : start - 1 + num_chars]
 
@@ -491,16 +593,16 @@ def _builtin_index(args: list[Any]) -> Any:
         if col_num is not None:
             col_num = int(float(col_num))
             if row_num < 1 or row_num > array.n_rows or col_num < 1 or col_num > array.n_cols:
-                return "#REF!"
+                return ExcelError.REF
             return array.get(row_num, col_num)
         # 1D horizontal range: row_num acts as column index
         if array.n_rows == 1:
             if row_num < 1 or row_num > array.n_cols:
-                return "#REF!"
+                return ExcelError.REF
             return array.get(1, row_num)
         # 1D column or multi-col: row_num selects row, return first col
         if row_num < 1 or row_num > array.n_rows:
-            return "#REF!"
+            return ExcelError.REF
         if array.n_cols == 1:
             return array.get(row_num, 1)
         # Multi-col without col_num: return first column value
@@ -509,7 +611,7 @@ def _builtin_index(args: list[Any]) -> Any:
     # Plain list fallback
     if isinstance(array, (list, tuple)):
         if row_num < 1 or row_num > len(array):
-            return "#REF!"
+            return ExcelError.REF
         return array[row_num - 1]
 
     return None
@@ -532,7 +634,7 @@ def _builtin_match(args: list[Any]) -> Any:
     elif isinstance(lookup_array, (list, tuple)):
         values = list(lookup_array)
     else:
-        return "#N/A"
+        return ExcelError.NA
 
     if match_type == 0:
         # Exact match - case-insensitive for strings
@@ -547,7 +649,7 @@ def _builtin_match(args: list[Any]) -> Any:
                     return i + 1
             elif lookup_value == v:
                 return i + 1
-        return "#N/A"
+        return ExcelError.NA
 
     if match_type == 1:
         # Largest value <= lookup (assumes sorted ascending)
@@ -556,7 +658,7 @@ def _builtin_match(args: list[Any]) -> Any:
             if isinstance(v, (int, float)) and isinstance(lookup_value, (int, float)):
                 if float(v) <= float(lookup_value):
                     best_idx = i + 1
-        return best_idx if best_idx is not None else "#N/A"
+        return best_idx if best_idx is not None else ExcelError.NA
 
     if match_type == -1:
         # Smallest value >= lookup (assumes sorted descending)
@@ -565,29 +667,52 @@ def _builtin_match(args: list[Any]) -> Any:
             if isinstance(v, (int, float)) and isinstance(lookup_value, (int, float)):
                 if float(v) >= float(lookup_value):
                     best_idx = i + 1
-        return best_idx if best_idx is not None else "#N/A"
+        return best_idx if best_idx is not None else ExcelError.NA
 
-    return "#N/A"
+    return ExcelError.NA
+
+
+def _xlookup_wildcard_match(pattern: str, text: str) -> bool:
+    """Match Excel wildcard pattern (*, ?) against text. Case-insensitive."""
+    import re as _re
+
+    regex = ""
+    i = 0
+    pat = pattern.lower()
+    while i < len(pat):
+        c = pat[i]
+        if c == "~" and i + 1 < len(pat):
+            regex += _re.escape(pat[i + 1])
+            i += 2
+        elif c == "*":
+            regex += ".*"
+            i += 1
+        elif c == "?":
+            regex += "."
+            i += 1
+        else:
+            regex += _re.escape(c)
+            i += 1
+    return bool(_re.fullmatch(regex, text.lower()))
 
 
 def _builtin_xlookup(args: list[Any]) -> Any:
     """XLOOKUP(lookup_value, lookup_array, return_array, [if_not_found], [match_mode], [search_mode]).
 
-    Only exact match (match_mode=0, search_mode=1) is built in.
-    Other modes return None to fall through to formulas lib.
+    match_mode: 0=exact (default), -1=next smaller, 1=next larger, 2=wildcard.
+    search_mode: 1=first-to-last (default), -1=last-to-first.
     """
     if len(args) < 3 or len(args) > 6:
         raise ValueError("XLOOKUP requires 3 to 6 arguments")
     lookup_value = args[0]
     lookup_array = args[1]
     return_array = args[2]
-    if_not_found = args[3] if len(args) > 3 else "#N/A"
+    if_not_found = args[3] if len(args) > 3 else ExcelError.NA
     match_mode = int(float(args[4])) if len(args) > 4 and args[4] is not None else 0
     search_mode = int(float(args[5])) if len(args) > 5 and args[5] is not None else 1
 
-    # Only handle exact match with forward search
-    if match_mode != 0 or search_mode not in (1, -1):
-        return None  # fall through to formulas lib
+    if match_mode not in (0, -1, 1, 2) or search_mode not in (1, -1):
+        return None  # fall through to formulas lib for unsupported modes
 
     # Flatten arrays
     if isinstance(lookup_array, RangeValue):
@@ -606,20 +731,55 @@ def _builtin_xlookup(args: list[Any]) -> Any:
 
     search_range = range(len(lookup_vals)) if search_mode == 1 else range(len(lookup_vals) - 1, -1, -1)
 
+    def _safe_return(idx: int) -> Any:
+        return return_vals[idx] if idx < len(return_vals) else if_not_found
+
+    # --- Exact match (0) or wildcard match (2) ---
+    if match_mode in (0, 2):
+        for i in search_range:
+            v = lookup_vals[i]
+            if v is None:
+                continue
+            if match_mode == 2 and isinstance(lookup_value, str) and isinstance(v, str):
+                if _xlookup_wildcard_match(lookup_value, v):
+                    return _safe_return(i)
+            elif isinstance(lookup_value, str) and isinstance(v, str):
+                if lookup_value.lower() == v.lower():
+                    return _safe_return(i)
+            elif isinstance(lookup_value, (int, float)) and isinstance(v, (int, float)):
+                if float(lookup_value) == float(v):
+                    return _safe_return(i)
+            elif lookup_value == v:
+                return _safe_return(i)
+        return if_not_found
+
+    # --- Approximate match: -1 (next smaller) or 1 (next larger) ---
+    if not isinstance(lookup_value, (int, float)):
+        return if_not_found
+
+    lv = float(lookup_value)
+    best_idx: int | None = None
+    best_val: float | None = None
+
     for i in search_range:
         v = lookup_vals[i]
-        if v is None:
+        if not isinstance(v, (int, float)):
             continue
-        matched = False
-        if isinstance(lookup_value, str) and isinstance(v, str):
-            matched = lookup_value.lower() == v.lower()
-        elif isinstance(lookup_value, (int, float)) and isinstance(v, (int, float)):
-            matched = float(lookup_value) == float(v)
-        else:
-            matched = lookup_value == v
-        if matched:
-            return return_vals[i] if i < len(return_vals) else if_not_found
+        fv = float(v)
 
+        if match_mode == -1:  # next smaller: largest value <= lookup
+            if fv <= lv:
+                if best_val is None or fv > best_val:
+                    best_val = fv
+                    best_idx = i
+        else:  # match_mode == 1: next larger: smallest value >= lookup
+            if fv >= lv:
+                if best_val is None or fv < best_val:
+                    best_val = fv
+                    best_idx = i
+
+    if best_idx is not None:
+        return _safe_return(best_idx)
     return if_not_found
 
 
@@ -646,21 +806,21 @@ def _builtin_vlookup(args: list[Any]) -> Any:
             range_lookup = rl.upper() != "FALSE"
 
     if col_index_num < 1:
-        return "#VALUE!"
+        return ExcelError.VALUE
 
     if isinstance(table_array, RangeValue):
         if col_index_num > table_array.n_cols:
-            return "#REF!"
+            return ExcelError.REF
         first_col = table_array.column(1)
         return_col = table_array.column(col_index_num)
     elif isinstance(table_array, (list, tuple)):
         # Flat list treated as single column
         if col_index_num > 1:
-            return "#REF!"
+            return ExcelError.REF
         first_col = list(table_array)
         return_col = first_col
     else:
-        return "#N/A"
+        return ExcelError.NA
 
     if range_lookup:
         # Approximate match: largest value <= lookup_value (sorted ascending)
@@ -675,8 +835,8 @@ def _builtin_vlookup(args: list[Any]) -> Any:
                 if v.lower() <= lookup_value.lower():
                     best_idx = i
         if best_idx is None:
-            return "#N/A"
-        return return_col[best_idx] if best_idx < len(return_col) else "#N/A"
+            return ExcelError.NA
+        return return_col[best_idx] if best_idx < len(return_col) else ExcelError.NA
     else:
         # Exact match (case-insensitive for strings)
         for i, v in enumerate(first_col):
@@ -684,13 +844,13 @@ def _builtin_vlookup(args: list[Any]) -> Any:
                 continue
             if isinstance(lookup_value, str) and isinstance(v, str):
                 if lookup_value.lower() == v.lower():
-                    return return_col[i] if i < len(return_col) else "#N/A"
+                    return return_col[i] if i < len(return_col) else ExcelError.NA
             elif isinstance(lookup_value, (int, float)) and isinstance(v, (int, float)):
                 if float(lookup_value) == float(v):
-                    return return_col[i] if i < len(return_col) else "#N/A"
+                    return return_col[i] if i < len(return_col) else ExcelError.NA
             elif lookup_value == v:
-                return return_col[i] if i < len(return_col) else "#N/A"
-        return "#N/A"
+                return return_col[i] if i < len(return_col) else ExcelError.NA
+        return ExcelError.NA
 
 
 def _builtin_hlookup(args: list[Any]) -> Any:
@@ -715,21 +875,21 @@ def _builtin_hlookup(args: list[Any]) -> Any:
             range_lookup = rl.upper() != "FALSE"
 
     if row_index_num < 1:
-        return "#VALUE!"
+        return ExcelError.VALUE
 
     if isinstance(table_array, RangeValue):
         if row_index_num > table_array.n_rows:
-            return "#REF!"
+            return ExcelError.REF
         first_row = table_array.row(1)
         return_row = table_array.row(row_index_num)
     elif isinstance(table_array, (list, tuple)):
         # Flat list treated as single row
         if row_index_num > 1:
-            return "#REF!"
+            return ExcelError.REF
         first_row = list(table_array)
         return_row = first_row
     else:
-        return "#N/A"
+        return ExcelError.NA
 
     if range_lookup:
         # Approximate match: largest value <= lookup_value (sorted ascending)
@@ -744,8 +904,8 @@ def _builtin_hlookup(args: list[Any]) -> Any:
                 if v.lower() <= lookup_value.lower():
                     best_idx = i
         if best_idx is None:
-            return "#N/A"
-        return return_row[best_idx] if best_idx < len(return_row) else "#N/A"
+            return ExcelError.NA
+        return return_row[best_idx] if best_idx < len(return_row) else ExcelError.NA
     else:
         # Exact match (case-insensitive for strings)
         for i, v in enumerate(first_row):
@@ -753,13 +913,13 @@ def _builtin_hlookup(args: list[Any]) -> Any:
                 continue
             if isinstance(lookup_value, str) and isinstance(v, str):
                 if lookup_value.lower() == v.lower():
-                    return return_row[i] if i < len(return_row) else "#N/A"
+                    return return_row[i] if i < len(return_row) else ExcelError.NA
             elif isinstance(lookup_value, (int, float)) and isinstance(v, (int, float)):
                 if float(lookup_value) == float(v):
-                    return return_row[i] if i < len(return_row) else "#N/A"
+                    return return_row[i] if i < len(return_row) else ExcelError.NA
             elif lookup_value == v:
-                return return_row[i] if i < len(return_row) else "#N/A"
-        return "#N/A"
+                return return_row[i] if i < len(return_row) else ExcelError.NA
+        return ExcelError.NA
 
 
 def _builtin_choose(args: list[Any]) -> Any:
@@ -768,7 +928,7 @@ def _builtin_choose(args: list[Any]) -> Any:
         raise ValueError("CHOOSE requires at least 2 arguments")
     index_num = int(float(args[0]))
     if index_num < 1 or index_num > len(args) - 1:
-        return "#VALUE!"
+        return ExcelError.VALUE
     return args[index_num]
 
 
@@ -897,6 +1057,646 @@ def _builtin_countifs(args: list[Any]) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Conditional stats: AVERAGEIF, AVERAGEIFS, MINIFS, MAXIFS
+# ---------------------------------------------------------------------------
+
+
+def _flatten_range(arg: Any) -> list[Any]:
+    """Extract values from a RangeValue, list, or single value."""
+    if isinstance(arg, RangeValue):
+        return arg.values
+    if isinstance(arg, (list, tuple)):
+        return list(arg)
+    return [arg]
+
+
+def _builtin_averageif(args: list[Any]) -> float | ExcelError:
+    """AVERAGEIF(criteria_range, criteria, [average_range])."""
+    if len(args) < 2 or len(args) > 3:
+        raise ValueError("AVERAGEIF requires 2 or 3 arguments")
+    crit_vals = _flatten_range(args[0])
+    criteria = args[1]
+    avg_vals = _flatten_range(args[2]) if len(args) > 2 else crit_vals
+
+    predicate = _parse_criteria(criteria)
+    total = 0.0
+    count = 0
+    for i, cv in enumerate(crit_vals):
+        if predicate(cv):
+            av = avg_vals[i] if i < len(avg_vals) else 0
+            if isinstance(av, (int, float)):
+                total += float(av)
+                count += 1
+    if count == 0:
+        return ExcelError.DIV0
+    return total / count
+
+
+def _builtin_averageifs(args: list[Any]) -> float | ExcelError:
+    """AVERAGEIFS(average_range, criteria_range1, criteria1, ...).
+
+    Note: average_range is FIRST (like SUMIFS).
+    """
+    if len(args) < 3 or len(args) % 2 == 0:
+        raise ValueError("AVERAGEIFS requires average_range + pairs of (criteria_range, criteria)")
+    avg_vals = _flatten_range(args[0])
+
+    predicates: list[tuple[list[Any], Callable[[Any], bool]]] = []
+    for j in range(1, len(args), 2):
+        cv = _flatten_range(args[j])
+        predicates.append((cv, _parse_criteria(args[j + 1])))
+
+    total = 0.0
+    count = 0
+    for i in range(len(avg_vals)):
+        if all(pred(cv[i]) if i < len(cv) else False for cv, pred in predicates):
+            av = avg_vals[i]
+            if isinstance(av, (int, float)):
+                total += float(av)
+                count += 1
+    if count == 0:
+        return ExcelError.DIV0
+    return total / count
+
+
+def _builtin_minifs(args: list[Any]) -> float | ExcelError:
+    """MINIFS(min_range, criteria_range1, criteria1, ...).
+
+    Returns the minimum value among cells meeting all criteria.
+    """
+    if len(args) < 3 or len(args) % 2 == 0:
+        raise ValueError("MINIFS requires min_range + pairs of (criteria_range, criteria)")
+    min_vals = _flatten_range(args[0])
+
+    predicates: list[tuple[list[Any], Callable[[Any], bool]]] = []
+    for j in range(1, len(args), 2):
+        cv = _flatten_range(args[j])
+        predicates.append((cv, _parse_criteria(args[j + 1])))
+
+    candidates: list[float] = []
+    for i in range(len(min_vals)):
+        if all(pred(cv[i]) if i < len(cv) else False for cv, pred in predicates):
+            mv = min_vals[i]
+            if isinstance(mv, (int, float)):
+                candidates.append(float(mv))
+    return min(candidates) if candidates else 0.0
+
+
+def _builtin_maxifs(args: list[Any]) -> float | ExcelError:
+    """MAXIFS(max_range, criteria_range1, criteria1, ...).
+
+    Returns the maximum value among cells meeting all criteria.
+    """
+    if len(args) < 3 or len(args) % 2 == 0:
+        raise ValueError("MAXIFS requires max_range + pairs of (criteria_range, criteria)")
+    max_vals = _flatten_range(args[0])
+
+    predicates: list[tuple[list[Any], Callable[[Any], bool]]] = []
+    for j in range(1, len(args), 2):
+        cv = _flatten_range(args[j])
+        predicates.append((cv, _parse_criteria(args[j + 1])))
+
+    candidates: list[float] = []
+    for i in range(len(max_vals)):
+        if all(pred(cv[i]) if i < len(cv) else False for cv, pred in predicates):
+            mv = max_vals[i]
+            if isinstance(mv, (int, float)):
+                candidates.append(float(mv))
+    return max(candidates) if candidates else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Text builtins (extended): UPPER, LOWER, TRIM, SUBSTITUTE, TEXT, REPT, EXACT, FIND
+# ---------------------------------------------------------------------------
+
+
+def _builtin_upper(args: list[Any]) -> str:
+    if len(args) != 1:
+        raise ValueError("UPPER requires exactly 1 argument")
+    return _coerce_string(args[0]).upper()
+
+
+def _builtin_lower(args: list[Any]) -> str:
+    if len(args) != 1:
+        raise ValueError("LOWER requires exactly 1 argument")
+    return _coerce_string(args[0]).lower()
+
+
+def _builtin_trim(args: list[Any]) -> str:
+    """TRIM: remove leading/trailing spaces and collapse internal spaces."""
+    if len(args) != 1:
+        raise ValueError("TRIM requires exactly 1 argument")
+    return " ".join(_coerce_string(args[0]).split())
+
+
+def _builtin_substitute(args: list[Any]) -> str:
+    """SUBSTITUTE(text, old_text, new_text, [instance_num])."""
+    if len(args) < 3 or len(args) > 4:
+        raise ValueError("SUBSTITUTE requires 3 or 4 arguments")
+    text = _coerce_string(args[0])
+    old_text = _coerce_string(args[1])
+    new_text = _coerce_string(args[2])
+
+    if len(args) > 3 and args[3] is not None:
+        instance = int(float(args[3]))
+        # Replace only the Nth occurrence
+        count = 0
+        start = 0
+        while True:
+            idx = text.find(old_text, start)
+            if idx == -1:
+                break
+            count += 1
+            if count == instance:
+                return text[:idx] + new_text + text[idx + len(old_text):]
+            start = idx + 1
+        return text  # instance not found, return unchanged
+
+    return text.replace(old_text, new_text)
+
+
+_MONTH_ABBRS = [
+    "", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+]
+
+
+def _builtin_text(args: list[Any]) -> str:
+    """TEXT(value, format_text). Supports common Excel format patterns."""
+    if len(args) != 2:
+        raise ValueError("TEXT requires exactly 2 arguments")
+    value = args[0]
+    fmt = _coerce_string(args[1])
+
+    if not isinstance(value, (int, float)):
+        return _coerce_string(value)
+
+    val = float(value)
+    # Strip leading/trailing quotes for matching (e.g., "$"#,##0 -> $#,##0)
+    fmt_clean = fmt.replace('"', '')
+    fmt_lower = fmt_clean.lower()
+
+    # --- Percentage formats ---
+    if fmt_lower == "0%":
+        return f"{val * 100:.0f}%"
+    if fmt_lower == "0.0%":
+        return f"{val * 100:.1f}%"
+    if fmt_lower == "0.00%":
+        return f"{val * 100:.2f}%"
+
+    # --- Number formats with commas ---
+    if fmt_lower in ("#,##0", "#,##0.0", "#,##0.00"):
+        decimals = len(fmt_lower.split(".")[-1]) if "." in fmt_lower else 0
+        return f"{val:,.{decimals}f}"
+
+    # --- Currency: $#,##0 and $#,##0.00 ---
+    if fmt_lower.startswith("$"):
+        num_part = fmt_lower[1:]
+        if num_part in ("#,##0", "#,##0.0", "#,##0.00"):
+            decimals = len(num_part.split(".")[-1]) if "." in num_part else 0
+            return f"${val:,.{decimals}f}"
+
+    # --- Accounting format with parentheses for negatives ---
+    if fmt_lower in ("#,##0_);(#,##0)", "#,##0.00_);(#,##0.00)"):
+        decimals = 2 if ".00" in fmt_lower else 0
+        if val < 0:
+            return f"({abs(val):,.{decimals}f})"
+        return f"{val:,.{decimals}f} "  # trailing space aligns with paren width
+
+    # --- Scientific notation ---
+    if fmt_lower == "0.00e+00":
+        return f"{val:.2E}"
+
+    # --- Date serial formats ---
+    if fmt_lower in ("yyyy-mm-dd", "yyyy/mm/dd"):
+        y, m, d = _serial_to_date(int(val))
+        sep = "-" if "-" in fmt_clean else "/"
+        return f"{y:04d}{sep}{m:02d}{sep}{d:02d}"
+    if fmt_lower == "mm/dd/yyyy":
+        y, m, d = _serial_to_date(int(val))
+        return f"{m:02d}/{d:02d}/{y:04d}"
+    if fmt_lower in ("d-mmm-yy", "d-mmm-yyyy"):
+        y, m, d = _serial_to_date(int(val))
+        abbr = _MONTH_ABBRS[m] if 1 <= m <= 12 else f"{m:02d}"
+        yr = y % 100 if fmt_lower == "d-mmm-yy" else y
+        return f"{d}-{abbr}-{yr:02d}" if fmt_lower == "d-mmm-yy" else f"{d}-{abbr}-{yr:04d}"
+    if fmt_lower == "mmm-yy":
+        y, m, d = _serial_to_date(int(val))
+        abbr = _MONTH_ABBRS[m] if 1 <= m <= 12 else f"{m:02d}"
+        return f"{abbr}-{y % 100:02d}"
+
+    # --- Plain numeric 0, 0.0, 0.00, 0.000, etc. ---
+    if fmt_lower.replace("0", "").replace(".", "") == "" and fmt_lower.startswith("0"):
+        decimals = len(fmt_lower.split(".")[-1]) if "." in fmt_lower else 0
+        return f"{val:.{decimals}f}"
+
+    # --- General ---
+    if fmt_lower == "general":
+        return str(int(val)) if val == int(val) else str(val)
+
+    # Fallback
+    return str(value)
+
+
+def _builtin_rept(args: list[Any]) -> str:
+    """REPT(text, number_times)."""
+    if len(args) != 2:
+        raise ValueError("REPT requires exactly 2 arguments")
+    text = _coerce_string(args[0])
+    n = int(float(args[1]))
+    if n < 0:
+        return ""
+    return text * n
+
+
+def _builtin_exact(args: list[Any]) -> bool:
+    """EXACT(text1, text2). Case-sensitive comparison."""
+    if len(args) != 2:
+        raise ValueError("EXACT requires exactly 2 arguments")
+    return _coerce_string(args[0]) == _coerce_string(args[1])
+
+
+def _builtin_find(args: list[Any]) -> int | ExcelError:
+    """FIND(find_text, within_text, [start_num]). Case-sensitive, 1-based."""
+    if len(args) < 2 or len(args) > 3:
+        raise ValueError("FIND requires 2 or 3 arguments")
+    find_text = _coerce_string(args[0])
+    within_text = _coerce_string(args[1])
+    start_num = int(float(args[2])) if len(args) > 2 and args[2] is not None else 1
+
+    if start_num < 1:
+        return ExcelError.VALUE
+
+    # Convert to 0-based for Python's str.find
+    idx = within_text.find(find_text, start_num - 1)
+    if idx == -1:
+        return ExcelError.VALUE
+    return idx + 1  # Back to 1-based
+
+
+# ---------------------------------------------------------------------------
+# Financial builtins (PV, FV, PMT, NPV, IRR, SLN, DB)
+# ---------------------------------------------------------------------------
+
+
+def _builtin_pv(args: list[Any]) -> float | ExcelError:
+    """PV(rate, nper, pmt, [fv], [type]).
+
+    Present value of an investment: the total amount that a series of future
+    payments is worth right now.
+    """
+    if len(args) < 3 or len(args) > 5:
+        raise ValueError("PV requires 3 to 5 arguments")
+    rate = float(args[0])
+    nper = float(args[1])
+    pmt = float(args[2])
+    fv = float(args[3]) if len(args) > 3 and args[3] is not None else 0.0
+    pmt_type = int(float(args[4])) if len(args) > 4 and args[4] is not None else 0
+
+    if rate == 0:
+        return -(fv + pmt * nper)
+    pv_annuity = pmt * (1 + rate * pmt_type) * (1 - (1 + rate) ** (-nper)) / rate
+    pv_fv = fv / (1 + rate) ** nper
+    return -(pv_annuity + pv_fv)
+
+
+def _builtin_fv(args: list[Any]) -> float | ExcelError:
+    """FV(rate, nper, pmt, [pv], [type]).
+
+    Future value of an investment based on periodic, constant payments
+    and a constant interest rate.
+    """
+    if len(args) < 3 or len(args) > 5:
+        raise ValueError("FV requires 3 to 5 arguments")
+    rate = float(args[0])
+    nper = float(args[1])
+    pmt = float(args[2])
+    pv = float(args[3]) if len(args) > 3 and args[3] is not None else 0.0
+    pmt_type = int(float(args[4])) if len(args) > 4 and args[4] is not None else 0
+
+    if rate == 0:
+        return -(pv + pmt * nper)
+    fv_pv = pv * (1 + rate) ** nper
+    fv_annuity = pmt * (1 + rate * pmt_type) * ((1 + rate) ** nper - 1) / rate
+    return -(fv_pv + fv_annuity)
+
+
+def _builtin_pmt(args: list[Any]) -> float | ExcelError:
+    """PMT(rate, nper, pv, [fv], [type]).
+
+    Payment for a loan based on constant payments and constant interest rate.
+    """
+    if len(args) < 3 or len(args) > 5:
+        raise ValueError("PMT requires 3 to 5 arguments")
+    rate = float(args[0])
+    nper = float(args[1])
+    pv = float(args[2])
+    fv = float(args[3]) if len(args) > 3 and args[3] is not None else 0.0
+    pmt_type = int(float(args[4])) if len(args) > 4 and args[4] is not None else 0
+
+    if rate == 0:
+        return -(pv + fv) / nper
+    pvif = (1 + rate) ** nper
+    return -(rate * (pv * pvif + fv)) / (pvif - 1) / (1 + rate * pmt_type)
+
+
+def _builtin_npv(args: list[Any]) -> float:
+    """NPV(rate, value1, [value2], ...).
+
+    Net present value of a series of cash flows. Note: Excel NPV
+    excludes time-0 cash flow (first value is at period 1).
+    """
+    if len(args) < 2:
+        raise ValueError("NPV requires at least 2 arguments (rate + values)")
+    rate = float(args[0])
+
+    # Flatten remaining args (could be scalars or ranges)
+    values: list[float] = []
+    for a in args[1:]:
+        if isinstance(a, RangeValue):
+            for v in a.values:
+                if isinstance(v, (int, float)):
+                    values.append(float(v))
+        elif isinstance(a, (list, tuple)):
+            for v in a:
+                if isinstance(v, (int, float)):
+                    values.append(float(v))
+        elif isinstance(a, (int, float)):
+            values.append(float(a))
+
+    return sum(v / (1 + rate) ** (i + 1) for i, v in enumerate(values))
+
+
+def _builtin_irr(args: list[Any]) -> float | ExcelError:
+    """IRR(values, [guess]).
+
+    Internal rate of return for a series of cash flows.
+    Uses Newton-Raphson with bisection fallback.
+    """
+    if len(args) < 1 or len(args) > 2:
+        raise ValueError("IRR requires 1 or 2 arguments")
+
+    # Flatten values
+    raw = args[0]
+    values: list[float] = []
+    if isinstance(raw, RangeValue):
+        for v in raw.values:
+            if isinstance(v, (int, float)):
+                values.append(float(v))
+    elif isinstance(raw, (list, tuple)):
+        for v in raw:
+            if isinstance(v, (int, float)):
+                values.append(float(v))
+    else:
+        return ExcelError.NUM
+
+    if len(values) < 2:
+        return ExcelError.NUM
+
+    # Must have both positive and negative cash flows
+    has_pos = any(v > 0 for v in values)
+    has_neg = any(v < 0 for v in values)
+    if not (has_pos and has_neg):
+        return ExcelError.NUM
+
+    guess = float(args[1]) if len(args) > 1 and args[1] is not None else 0.1
+
+    def _npv(rate: float) -> float:
+        return sum(v / (1 + rate) ** i for i, v in enumerate(values))
+
+    def _npv_deriv(rate: float) -> float:
+        return sum(-i * v / (1 + rate) ** (i + 1) for i, v in enumerate(values))
+
+    # Newton-Raphson
+    rate = guess
+    for _ in range(100):
+        npv_val = _npv(rate)
+        if abs(npv_val) < 1e-10:
+            return rate
+        deriv = _npv_deriv(rate)
+        if abs(deriv) < 1e-14:
+            break
+        new_rate = rate - npv_val / deriv
+        if abs(new_rate - rate) < 1e-10:
+            return new_rate
+        rate = new_rate
+
+    # Bisection fallback: search [-0.999, 10.0]
+    lo, hi = -0.999, 10.0
+    if _npv(lo) * _npv(hi) > 0:
+        return ExcelError.NUM
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if abs(_npv(mid)) < 1e-10 or (hi - lo) < 1e-12:
+            return mid
+        if _npv(lo) * _npv(mid) < 0:
+            hi = mid
+        else:
+            lo = mid
+    return ExcelError.NUM
+
+
+def _builtin_sln(args: list[Any]) -> float:
+    """SLN(cost, salvage, life).
+
+    Straight-line depreciation for one period.
+    """
+    if len(args) != 3:
+        raise ValueError("SLN requires exactly 3 arguments")
+    cost = float(args[0])
+    salvage = float(args[1])
+    life = float(args[2])
+    if life == 0:
+        raise ValueError("SLN: life cannot be zero")
+    return (cost - salvage) / life
+
+
+def _builtin_db(args: list[Any]) -> float | ExcelError:
+    """DB(cost, salvage, life, period, [month]).
+
+    Fixed-declining balance depreciation. *month* is the number of months
+    in the first year (default 12).
+    """
+    if len(args) < 4 or len(args) > 5:
+        raise ValueError("DB requires 4 or 5 arguments")
+    cost = float(args[0])
+    salvage = float(args[1])
+    life = int(float(args[2]))
+    period = int(float(args[3]))
+    month = int(float(args[4])) if len(args) > 4 and args[4] is not None else 12
+
+    if life <= 0 or period <= 0:
+        return ExcelError.NUM
+    if cost <= 0:
+        return 0.0
+
+    # Excel rounds rate to 3 decimal places
+    rate = round(1 - (salvage / cost) ** (1 / life), 3)
+    book_value = cost
+
+    for yr in range(1, period + 1):
+        if yr == 1:
+            dep = cost * rate * month / 12
+        elif yr == life + 1:
+            # Final partial year
+            dep = book_value * rate * (12 - month) / 12
+        else:
+            dep = book_value * rate
+        book_value -= dep
+
+    return dep  # type: ignore[possibly-unbound]
+
+
+# ---------------------------------------------------------------------------
+# Date serial number helpers (Excel epoch: serial 1 = Jan 1, 1900)
+# ---------------------------------------------------------------------------
+
+# The Lotus 1-2-3 bug: serial 60 = Feb 29, 1900 (doesn't exist).
+# Serials >= 61 are off by one vs a correct calendar.
+_LOTUS_BUG_SERIAL = 60
+
+
+def _date_to_serial(y: int, m: int, d: int) -> int:
+    """Convert (year, month, day) to an Excel serial number.
+
+    Handles month overflow/underflow (e.g., month 14 wraps to Feb next year).
+    Reproduces the Lotus 1-2-3 bug for dates before March 1, 1900.
+    """
+    # Normalize month overflow/underflow
+    m -= 1  # 0-based
+    y += m // 12
+    m = m % 12 + 1
+
+    # Build a Python date
+    # Clamp day to max for the month
+    max_day = calendar.monthrange(y, m)[1]
+    d = min(d, max_day)
+    dt = datetime.date(y, m, d)
+
+    # Days from Jan 1, 1900
+    epoch = datetime.date(1899, 12, 31)  # serial 0 is Dec 31, 1899
+    serial = (dt - epoch).days
+
+    # Lotus bug: for dates >= Mar 1, 1900, add 1 to account for
+    # the phantom Feb 29, 1900
+    if serial >= _LOTUS_BUG_SERIAL:
+        serial += 1
+
+    return serial
+
+
+def _serial_to_date(serial: int) -> tuple[int, int, int]:
+    """Convert an Excel serial number to (year, month, day).
+
+    Handles the Lotus 1-2-3 bug: serial 60 = Feb 29, 1900.
+    """
+    if serial == _LOTUS_BUG_SERIAL:
+        return (1900, 2, 29)  # The phantom date
+
+    # For serials > 60, subtract 1 to undo the Lotus bug offset
+    adjusted = serial - 1 if serial > _LOTUS_BUG_SERIAL else serial
+
+    epoch = datetime.date(1899, 12, 31)
+    dt = epoch + datetime.timedelta(days=adjusted)
+    return (dt.year, dt.month, dt.day)
+
+
+# ---------------------------------------------------------------------------
+# Date builtins (TODAY, DATE, YEAR, MONTH, DAY, EDATE, EOMONTH, DAYS)
+# ---------------------------------------------------------------------------
+
+
+def _builtin_today(args: list[Any]) -> int:
+    """TODAY(). Returns the current date as an Excel serial number."""
+    today = datetime.date.today()
+    return _date_to_serial(today.year, today.month, today.day)
+
+
+def _builtin_date(args: list[Any]) -> int | ExcelError:
+    """DATE(year, month, day). Returns an Excel serial number.
+
+    Handles month overflow: DATE(2020,14,1) = DATE(2021,2,1).
+    """
+    if len(args) != 3:
+        raise ValueError("DATE requires exactly 3 arguments")
+    y = int(float(args[0]))
+    m = int(float(args[1]))
+    d = int(float(args[2]))
+    # Excel interprets 0-29 as 1900-1929, 30-99 as 1930-1999
+    if 0 <= y <= 29:
+        y += 1900
+    elif 30 <= y <= 99:
+        y += 1900
+    result = _date_to_serial(y, m, d)
+    if result < 1:
+        return ExcelError.NUM
+    return result
+
+
+def _builtin_year(args: list[Any]) -> int:
+    """YEAR(serial). Extract year from a serial number."""
+    if len(args) != 1:
+        raise ValueError("YEAR requires exactly 1 argument")
+    serial = int(float(args[0]))
+    y, _m, _d = _serial_to_date(serial)
+    return y
+
+
+def _builtin_month(args: list[Any]) -> int:
+    """MONTH(serial). Extract month (1-12) from a serial number."""
+    if len(args) != 1:
+        raise ValueError("MONTH requires exactly 1 argument")
+    serial = int(float(args[0]))
+    _y, m, _d = _serial_to_date(serial)
+    return m
+
+
+def _builtin_day(args: list[Any]) -> int:
+    """DAY(serial). Extract day (1-31) from a serial number."""
+    if len(args) != 1:
+        raise ValueError("DAY requires exactly 1 argument")
+    serial = int(float(args[0]))
+    _y, _m, d = _serial_to_date(serial)
+    return d
+
+
+def _builtin_edate(args: list[Any]) -> int | ExcelError:
+    """EDATE(start_date, months). Date N months from start."""
+    if len(args) != 2:
+        raise ValueError("EDATE requires exactly 2 arguments")
+    start_serial = int(float(args[0]))
+    months = int(float(args[1]))
+    y, m, d = _serial_to_date(start_serial)
+    return _date_to_serial(y, m + months, d)
+
+
+def _builtin_eomonth(args: list[Any]) -> int | ExcelError:
+    """EOMONTH(start_date, months). End of month N months from start."""
+    if len(args) != 2:
+        raise ValueError("EOMONTH requires exactly 2 arguments")
+    start_serial = int(float(args[0]))
+    months = int(float(args[1]))
+    y, m, _d = _serial_to_date(start_serial)
+    # Move to target month
+    m += months
+    # Normalize
+    m -= 1
+    y += m // 12
+    m = m % 12 + 1
+    last_day = calendar.monthrange(y, m)[1]
+    return _date_to_serial(y, m, last_day)
+
+
+def _builtin_days(args: list[Any]) -> int:
+    """DAYS(end_date, start_date). Simple subtraction."""
+    if len(args) != 2:
+        raise ValueError("DAYS requires exactly 2 arguments")
+    end = int(float(args[0]))
+    start = int(float(args[1]))
+    return end - start
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -936,6 +1736,35 @@ _BUILTINS: dict[str, Callable[[list[Any]], Any]] = {
     "SUMIFS": _builtin_sumifs,
     "COUNTIF": _builtin_countif,
     "COUNTIFS": _builtin_countifs,
+    "PV": _builtin_pv,
+    "FV": _builtin_fv,
+    "PMT": _builtin_pmt,
+    "NPV": _builtin_npv,
+    "IRR": _builtin_irr,
+    "SLN": _builtin_sln,
+    "DB": _builtin_db,
+    "TODAY": _builtin_today,
+    "DATE": _builtin_date,
+    "YEAR": _builtin_year,
+    "MONTH": _builtin_month,
+    "DAY": _builtin_day,
+    "EDATE": _builtin_edate,
+    "EOMONTH": _builtin_eomonth,
+    "DAYS": _builtin_days,
+    # Conditional stats (Phase 5)
+    "AVERAGEIF": _builtin_averageif,
+    "AVERAGEIFS": _builtin_averageifs,
+    "MINIFS": _builtin_minifs,
+    "MAXIFS": _builtin_maxifs,
+    # Text (Phase 5)
+    "UPPER": _builtin_upper,
+    "LOWER": _builtin_lower,
+    "TRIM": _builtin_trim,
+    "SUBSTITUTE": _builtin_substitute,
+    "TEXT": _builtin_text,
+    "REPT": _builtin_rept,
+    "EXACT": _builtin_exact,
+    "FIND": _builtin_find,
 }
 
 

@@ -7,6 +7,7 @@ import tempfile
 
 import pytest
 from wolfxl.calc._evaluator import WorkbookEvaluator
+from wolfxl.calc._functions import ExcelError
 
 import wolfxl
 
@@ -547,3 +548,285 @@ class TestScientificNotation:
         ev.load(wb)
         results = ev.calculate()
         assert results["Sheet!B1"] == 25.0
+
+
+# ---------------------------------------------------------------------------
+# Error value propagation through the evaluator
+# ---------------------------------------------------------------------------
+
+
+class TestErrorPropagation:
+    """Verify ExcelError values propagate through arithmetic and comparisons."""
+
+    def test_division_by_zero_returns_excel_error(self) -> None:
+        """=1/0 should produce ExcelError.DIV0, not a string."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = "=1/0"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert isinstance(results["Sheet!A1"], ExcelError)
+        assert results["Sheet!A1"] == ExcelError.DIV0
+
+    def test_error_propagates_through_addition(self) -> None:
+        """=1/0 in A1, =A1+5 in B1 should propagate #DIV/0! to B1."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = "=1/0"
+        ws["B1"] = "=A1+5"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert results["Sheet!A1"] == ExcelError.DIV0
+        assert results["Sheet!B1"] == ExcelError.DIV0
+
+    def test_error_propagates_through_multiplication(self) -> None:
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = "=1/0"
+        ws["B1"] = "=A1*10"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert results["Sheet!B1"] == ExcelError.DIV0
+
+    def test_error_propagates_through_comparison(self) -> None:
+        """Comparisons with error operands return the error."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = "=1/0"
+        ws["B1"] = "=A1>5"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert results["Sheet!B1"] == ExcelError.DIV0
+
+    def test_error_chain_three_deep(self) -> None:
+        """A1=1/0, B1=A1+1, C1=B1*2 - error flows through entire chain."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = "=1/0"
+        ws["B1"] = "=A1+1"
+        ws["C1"] = "=B1*2"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert results["Sheet!A1"] == ExcelError.DIV0
+        assert results["Sheet!B1"] == ExcelError.DIV0
+        assert results["Sheet!C1"] == ExcelError.DIV0
+
+    def test_iferror_catches_propagated_error(self) -> None:
+        """IFERROR should catch errors from formula chains."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = "=1/0"
+        ws["B1"] = "=IFERROR(A1, 0)"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert results["Sheet!A1"] == ExcelError.DIV0
+        assert results["Sheet!B1"] == 0
+
+    def test_sum_over_error_cells_skips_errors(self) -> None:
+        """SUM aggregation skips error cells (Excel range behavior)."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = 10
+        ws["A2"] = "=1/0"
+        ws["A3"] = 20
+        ws["B1"] = "=SUM(A1:A3)"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert results["Sheet!B1"] == 30.0
+
+    def test_concatenation_with_error_propagates(self) -> None:
+        """& operator should propagate errors too."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = "=1/0"
+        ws["B1"] = '=A1&" suffix"'
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert results["Sheet!B1"] == ExcelError.DIV0
+
+    def test_recalculate_propagates_new_error(self) -> None:
+        """Recalc: perturbing denominator to zero propagates error."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = 10
+        ws["A2"] = 5
+        ws["B1"] = "=A1/A2"
+        ws["C1"] = "=B1+100"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        ev.calculate()
+        recalc = ev.recalculate({"Sheet!A2": 0})
+        # Both B1 and C1 should now be #DIV/0!
+        assert ev._cell_values["Sheet!B1"] == ExcelError.DIV0
+        assert ev._cell_values["Sheet!C1"] == ExcelError.DIV0
+        assert recalc.propagated_cells == 2
+
+
+# ---------------------------------------------------------------------------
+# OFFSET function tests
+# ---------------------------------------------------------------------------
+
+
+class TestOFFSET:
+    def test_single_cell_offset(self) -> None:
+        """OFFSET(A1, 2, 0) returns value of A3."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = 10
+        ws["A2"] = 20
+        ws["A3"] = 30
+        ws["B1"] = "=OFFSET(A1,2,0)"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert results["Sheet!B1"] == 30
+
+    def test_offset_with_col(self) -> None:
+        """OFFSET(A1, 0, 1) returns value of B1."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = 10
+        ws["B1"] = 99
+        ws["C1"] = "=OFFSET(A1,0,1)"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert results["Sheet!C1"] == 99
+
+    def test_sum_of_offset_range(self) -> None:
+        """SUM(OFFSET(A1, 0, 0, 5, 1)) sums A1:A5."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        for i in range(1, 6):
+            ws[f"A{i}"] = i * 10
+        ws["B1"] = "=SUM(OFFSET(A1,0,0,5,1))"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert results["Sheet!B1"] == 150.0  # 10+20+30+40+50
+
+    def test_offset_out_of_bounds(self) -> None:
+        """OFFSET with negative result row returns #REF!."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = 10
+        ws["B1"] = "=OFFSET(A1,-5,0)"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert results["Sheet!B1"] == ExcelError.REF
+
+    def test_offset_dynamic_height(self) -> None:
+        """OFFSET with height from a cell reference."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = 10
+        ws["A2"] = 20
+        ws["A3"] = 30
+        ws["B1"] = 3
+        ws["C1"] = "=SUM(OFFSET(A1,0,0,B1,1))"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        results = ev.calculate()
+        assert results["Sheet!C1"] == 60.0
+
+
+class TestNamedRanges:
+    """Named range resolution in the evaluator."""
+
+    def test_single_cell_named_range(self) -> None:
+        """A named range pointing to a single cell resolves its value."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = 100
+        ws["B1"] = "=Revenue*2"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        ev._named_ranges["REVENUE"] = "Sheet!A1"
+        results = ev.calculate()
+        assert results["Sheet!B1"] == 200.0
+
+    def test_range_named_range_in_sum(self) -> None:
+        """SUM(NamedRange) where NamedRange refers to A1:A3."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = 10
+        ws["A2"] = 20
+        ws["A3"] = 30
+        ws["B1"] = "=SUM(Expenses)"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        ev._named_ranges["EXPENSES"] = "Sheet!A1:A3"
+        results = ev.calculate()
+        assert results["Sheet!B1"] == 60.0
+
+    def test_case_insensitive(self) -> None:
+        """Named range lookup is case-insensitive."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = 42
+        ws["B1"] = "=myName"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        ev._named_ranges["MYNAME"] = "Sheet!A1"
+        results = ev.calculate()
+        assert results["Sheet!B1"] == 42
+
+    def test_named_range_in_formula(self) -> None:
+        """Named range used in arithmetic: =Revenue-COGS."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = 1000
+        ws["A2"] = 600
+        ws["B1"] = "=Revenue-COGS"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        ev._named_ranges["REVENUE"] = "Sheet!A1"
+        ev._named_ranges["COGS"] = "Sheet!A2"
+        results = ev.calculate()
+        assert results["Sheet!B1"] == 400.0
+
+    def test_named_range_cross_sheet(self) -> None:
+        """Named range can refer to a cell on another sheet."""
+        wb = wolfxl.Workbook()
+        ws1 = wb.active
+        ws2 = wb.create_sheet("Data")
+        ws2["A1"] = 500
+        ws1["A1"] = "=TotalSales"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        ev._named_ranges["TOTALSALES"] = "Data!A1"
+        results = ev.calculate()
+        assert results["Sheet!A1"] == 500
+
+    def test_named_range_perturbation(self) -> None:
+        """Recalculation through named range after perturbation."""
+        wb = wolfxl.Workbook()
+        ws = wb.active
+        ws["A1"] = 100
+        ws["B1"] = "=Revenue*2"
+        ev = WorkbookEvaluator()
+        ev.load(wb)
+        # Inject named ranges and re-register the formula so the graph
+        # tracks the dependency through the named range.
+        ev._named_ranges["REVENUE"] = "Sheet!A1"
+        ev._graph.add_formula(
+            "Sheet!B1", "=Revenue*2", "Sheet",
+            named_ranges=ev._named_ranges,
+        )
+        ev.calculate()
+        recalc = ev.recalculate({"Sheet!A1": 200}, tolerance=1e-10)
+        assert any(d.cell_ref == "Sheet!B1" and d.new_value == 400.0 for d in recalc.deltas)
+
+    def test_write_mode_has_no_named_ranges(self) -> None:
+        """Write-mode workbook returns empty defined_names."""
+        wb = wolfxl.Workbook()
+        assert wb.defined_names == {}

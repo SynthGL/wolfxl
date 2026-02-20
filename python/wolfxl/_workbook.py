@@ -93,6 +93,34 @@ class Workbook:
         return iter(self._sheet_names)
 
     # ------------------------------------------------------------------
+    # Named ranges
+    # ------------------------------------------------------------------
+
+    @property
+    def defined_names(self) -> dict[str, str]:
+        """Return all defined names as ``{NAME: refers_to}`` (case-preserved).
+
+        Reads from the Rust backend (read mode) or returns empty (write mode).
+        Workbook-scoped names override sheet-scoped on collision.
+        """
+        if self._rust_reader is None:
+            return {}
+        result: dict[str, str] = {}
+        for sheet_name in self._sheet_names:
+            try:
+                entries = self._rust_reader.read_named_ranges(sheet_name)
+            except Exception:
+                continue
+            for entry in entries:
+                name = entry["name"]
+                refers_to = entry["refers_to"]
+                # Strip leading '=' if present
+                if refers_to.startswith("="):
+                    refers_to = refers_to[1:]
+                result[name] = refers_to
+        return result
+
+    # ------------------------------------------------------------------
     # Write-mode operations
     # ------------------------------------------------------------------
 

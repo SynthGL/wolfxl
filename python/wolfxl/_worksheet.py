@@ -12,6 +12,89 @@ if TYPE_CHECKING:
     from wolfxl._workbook import Workbook
 
 
+class _RowDimensionProxy:
+    """Dict-like proxy: ``ws.row_dimensions[1].height = 30``."""
+
+    __slots__ = ("_ws",)
+
+    def __init__(self, ws: Worksheet) -> None:
+        self._ws = ws
+
+    def __getitem__(self, row: int) -> _RowDimension:
+        return _RowDimension(self._ws, row)
+
+
+class _RowDimension:
+    """Single row dimension with a readable/writable ``height`` property."""
+
+    __slots__ = ("_ws", "_row")
+
+    def __init__(self, ws: Worksheet, row: int) -> None:
+        self._ws = ws
+        self._row = row
+
+    @property
+    def height(self) -> float | None:
+        wb = self._ws._workbook  # noqa: SLF001
+        if wb._rust_reader is not None:  # noqa: SLF001
+            return wb._rust_reader.read_row_height(self._ws._title, self._row)  # noqa: SLF001
+        return self._ws._row_heights.get(self._row)  # noqa: SLF001
+
+    @height.setter
+    def height(self, value: float | None) -> None:
+        self._ws._row_heights[self._row] = value  # noqa: SLF001
+
+
+class _ColumnDimensionProxy:
+    """Dict-like proxy: ``ws.column_dimensions['A'].width = 15``."""
+
+    __slots__ = ("_ws",)
+
+    def __init__(self, ws: Worksheet) -> None:
+        self._ws = ws
+
+    def __getitem__(self, col_letter: str) -> _ColumnDimension:
+        return _ColumnDimension(self._ws, col_letter.upper())
+
+
+class _ColumnDimension:
+    """Single column dimension with a readable/writable ``width`` property."""
+
+    __slots__ = ("_ws", "_col_letter")
+
+    def __init__(self, ws: Worksheet, col_letter: str) -> None:
+        self._ws = ws
+        self._col_letter = col_letter
+
+    @property
+    def width(self) -> float | None:
+        wb = self._ws._workbook  # noqa: SLF001
+        if wb._rust_reader is not None:  # noqa: SLF001
+            return wb._rust_reader.read_column_width(self._ws._title, self._col_letter)  # noqa: SLF001
+        return self._ws._col_widths.get(self._col_letter)  # noqa: SLF001
+
+    @width.setter
+    def width(self, value: float | None) -> None:
+        self._ws._col_widths[self._col_letter] = value  # noqa: SLF001
+
+
+class _AutoFilter:
+    """Proxy for ``ws.auto_filter.ref = 'A1:D10'``."""
+
+    __slots__ = ("_ref",)
+
+    def __init__(self) -> None:
+        self._ref: str | None = None
+
+    @property
+    def ref(self) -> str | None:
+        return self._ref
+
+    @ref.setter
+    def ref(self, value: str | None) -> None:
+        self._ref = value
+
+
 class Worksheet:
     """Proxy for a single worksheet in a Workbook."""
 
@@ -19,6 +102,9 @@ class Worksheet:
         "_workbook", "_title", "_cells", "_dirty", "_dimensions",
         "_max_col_idx", "_next_append_row",
         "_append_buffer", "_append_buffer_start", "_bulk_writes",
+        "_freeze_panes", "_auto_filter",
+        "_row_heights", "_col_widths",
+        "_merged_ranges", "_print_area",
     )
 
     def __init__(self, workbook: Workbook, title: str) -> None:
@@ -34,6 +120,13 @@ class Worksheet:
         self._append_buffer_start: int = 1
         # Bulk write buffer: list of (grid, start_row, start_col) tuples.
         self._bulk_writes: list[tuple[list[list[Any]], int, int]] = []
+        # openpyxl compat properties
+        self._freeze_panes: str | None = None
+        self._auto_filter = _AutoFilter()
+        self._row_heights: dict[int, float | None] = {}
+        self._col_widths: dict[str, float | None] = {}
+        self._merged_ranges: set[str] = set()
+        self._print_area: str | None = None
 
     @property
     def title(self) -> str:
@@ -56,6 +149,54 @@ class Worksheet:
         # Sync the Rust writer so ensure_sheet_exists() sees the new name.
         if wb._rust_writer is not None:  # noqa: SLF001
             wb._rust_writer.rename_sheet(old, value)  # noqa: SLF001
+
+    # ------------------------------------------------------------------
+    # openpyxl compat properties
+    # ------------------------------------------------------------------
+
+    @property
+    def freeze_panes(self) -> str | None:
+        """Get/set the freeze panes cell reference (e.g. ``'B2'``).
+
+        In read mode, reads from the Rust backend.  In write mode,
+        the value is stored and flushed to Rust on ``save()``.
+        """
+        wb = self._workbook
+        if wb._rust_reader is not None and self._freeze_panes is None:  # noqa: SLF001
+            info = wb._rust_reader.read_freeze_panes(self._title)  # noqa: SLF001
+            if info and info.get("mode"):
+                return info.get("top_left_cell")
+            return None
+        return self._freeze_panes
+
+    @freeze_panes.setter
+    def freeze_panes(self, value: str | None) -> None:
+        self._freeze_panes = value
+
+    @property
+    def auto_filter(self) -> _AutoFilter:
+        return self._auto_filter
+
+    @property
+    def row_dimensions(self) -> _RowDimensionProxy:
+        return _RowDimensionProxy(self)
+
+    @property
+    def column_dimensions(self) -> _ColumnDimensionProxy:
+        return _ColumnDimensionProxy(self)
+
+    @property
+    def print_area(self) -> str | None:
+        """Get/set the print area range string (e.g. ``'A1:D10'``).
+
+        Stored locally and flushed to the Rust writer on ``save()`` if the
+        writer supports ``set_print_area()``.
+        """
+        return self._print_area
+
+    @print_area.setter
+    def print_area(self, value: str | None) -> None:
+        self._print_area = value
 
     # ------------------------------------------------------------------
     # Cell access
@@ -323,6 +464,15 @@ class Worksheet:
         if wb._rust_writer is None:  # noqa: SLF001
             raise RuntimeError("merge_cells requires write mode")
         wb._rust_writer.merge_cells(self._title, range_string)  # noqa: SLF001
+        self._merged_ranges.add(range_string)
+
+    def unmerge_cells(self, range_string: str) -> None:
+        """Unmerge a previously merged range.
+
+        If *range_string* was not previously merged, silently does nothing
+        (matches openpyxl behaviour).
+        """
+        self._merged_ranges.discard(range_string)
 
     # ------------------------------------------------------------------
     # Flush pending writes to Rust
@@ -341,6 +491,10 @@ class Worksheet:
         wb = self._workbook
         patcher = wb._rust_patcher  # noqa: SLF001
         writer = wb._rust_writer  # noqa: SLF001
+
+        # Flush openpyxl compat properties to writer
+        if writer is not None:
+            self._flush_compat_properties(writer)
 
         if patcher is not None:
             # Modify mode: materialize buffers first (patcher has no batch
@@ -579,6 +733,30 @@ class Worksheet:
                     bdict = border_to_rust_dict(cell._border)  # noqa: SLF001
                     if bdict:
                         patcher.queue_border(self._title, coord, bdict)
+
+    def _flush_compat_properties(self, writer: Any) -> None:
+        """Flush openpyxl compat properties (freeze_panes, dimensions, etc.)."""
+        sheet = self._title
+
+        # Freeze panes
+        if self._freeze_panes is not None:
+            writer.set_freeze_panes(
+                sheet, {"mode": "freeze", "top_left_cell": self._freeze_panes},
+            )
+
+        # Row heights
+        for row_num, height in self._row_heights.items():
+            if height is not None:
+                writer.set_row_height(sheet, row_num, height)
+
+        # Column widths
+        for col_letter, width in self._col_widths.items():
+            if width is not None:
+                writer.set_column_width(sheet, col_letter, width)
+
+        # Print area (flush only if the Rust writer supports it)
+        if self._print_area is not None and hasattr(writer, "set_print_area"):
+            writer.set_print_area(sheet, self._print_area)
 
     def __repr__(self) -> str:
         return f"<Worksheet [{self._title}]>"

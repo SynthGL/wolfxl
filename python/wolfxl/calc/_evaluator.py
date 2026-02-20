@@ -15,7 +15,8 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
-from wolfxl.calc._functions import FunctionRegistry, RangeValue
+from wolfxl._utils import a1_to_rowcol, rowcol_to_a1
+from wolfxl.calc._functions import ExcelError, FunctionRegistry, RangeValue, first_error
 from wolfxl.calc._graph import DependencyGraph
 from wolfxl.calc._parser import expand_range, range_shape
 from wolfxl.calc._protocol import CellDelta, RecalcResult
@@ -192,6 +193,10 @@ def _has_top_level_colon(expr: str) -> bool:
 
 def _binary_op(left: Any, op: str, right: Any) -> Any:
     """Evaluate an arithmetic or string binary operation."""
+    # Error propagation: if either operand is an error, propagate it
+    err = first_error(left, right)
+    if err is not None:
+        return err
     if op == '&':
         return str(left if left is not None else "") + str(right if right is not None else "")
     if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
@@ -203,16 +208,21 @@ def _binary_op(left: Any, op: str, right: Any) -> Any:
     if op == '*':
         return left * right
     if op == '/':
-        return "#DIV/0!" if right == 0 else left / right
+        return ExcelError.DIV0 if right == 0 else left / right
     return None
 
 
-def _compare(left: Any, right: Any, op: str) -> bool:
+def _compare(left: Any, right: Any, op: str) -> Any:
     """Evaluate a comparison operation.
 
     Handles both numeric and string comparisons. String comparisons are
-    case-insensitive (matching Excel behavior).
+    case-insensitive (matching Excel behavior).  Returns an ExcelError
+    if either operand is an error.
     """
+    # Error propagation: if either operand is an error, propagate it
+    err = first_error(left, right)
+    if err is not None:
+        return err
     # Both numeric -> numeric comparison
     if isinstance(left, (int, float)) and isinstance(right, (int, float)):
         lf, rf = left, right
@@ -284,6 +294,7 @@ class WorkbookEvaluator:
         self._cell_values: dict[str, Any] = {}
         self._graph = DependencyGraph()
         self._functions = FunctionRegistry()
+        self._named_ranges: dict[str, str] = {}  # NAME -> refers_to
         self._loaded = False
         self._use_formulas = _check_formulas()
         self._compiled_cache: dict[str, Any] = {}  # formula -> compiled callable
@@ -292,6 +303,13 @@ class WorkbookEvaluator:
         """Scan workbook, store cell values, build dependency graph."""
         self._cell_values.clear()
         self._graph = DependencyGraph()
+        self._named_ranges.clear()
+
+        # Load named ranges first (needed for dependency graph)
+        for name, refers_to in workbook.defined_names.items():
+            self._named_ranges[name.upper()] = refers_to
+
+        nr = self._named_ranges if self._named_ranges else None
 
         for sheet_name in workbook.sheetnames:
             ws = workbook[sheet_name]
@@ -302,7 +320,9 @@ class WorkbookEvaluator:
                     if isinstance(val, str) and val.startswith("="):
                         # Formula cell: store formula string, register in graph
                         self._cell_values[cell_ref] = val
-                        self._graph.add_formula(cell_ref, val, sheet_name)
+                        self._graph.add_formula(
+                            cell_ref, val, sheet_name, named_ranges=nr,
+                        )
                     elif val is not None:
                         # Value cell: store the value
                         self._cell_values[cell_ref] = val
@@ -475,6 +495,13 @@ class WorkbookEvaluator:
         if upper == 'FALSE':
             return False
 
+        # 7b. Named range resolution
+        if upper in self._named_ranges:
+            refers_to = self._named_ranges[upper]
+            if ':' in refers_to:
+                return self._resolve_range_2d(refers_to, sheet)
+            return self._resolve_cell_ref(refers_to, sheet)
+
         # 8. Cell reference
         return self._resolve_cell_ref(expr, sheet)
 
@@ -528,6 +555,10 @@ class WorkbookEvaluator:
 
     def _eval_function(self, func_name: str, args_str: str, sheet: str) -> Any:
         """Evaluate a function call with resolved arguments."""
+        # OFFSET is special: it creates a dynamic reference, not a scalar.
+        if func_name == "OFFSET":
+            return self._eval_offset(args_str, sheet)
+
         func = self._functions.get(func_name)
         if func is None:
             logger.debug("Unsupported function: %s", func_name)
@@ -538,6 +569,100 @@ class WorkbookEvaluator:
         except Exception as e:
             logger.debug("Error evaluating %s: %s", func_name, e)
             return None
+
+    def _eval_offset(self, args_str: str, sheet: str) -> Any:
+        """Evaluate OFFSET(reference, rows, cols, [height], [width]).
+
+        Returns a RangeValue for multi-cell results or a scalar for single-cell.
+        """
+        raw_args = self._split_top_level_args(args_str)
+        if len(raw_args) < 3 or len(raw_args) > 5:
+            return ExcelError.REF
+
+        # First arg is a cell reference - parse it as text, not resolve its value
+        ref_str = raw_args[0].strip().replace('$', '')
+        rows_offset = self._eval_expr(raw_args[1].strip(), sheet)
+        cols_offset = self._eval_expr(raw_args[2].strip(), sheet)
+        height = self._eval_expr(raw_args[3].strip(), sheet) if len(raw_args) > 3 else None
+        width = self._eval_expr(raw_args[4].strip(), sheet) if len(raw_args) > 4 else None
+
+        try:
+            rows_offset = int(float(rows_offset))
+            cols_offset = int(float(cols_offset))
+        except (ValueError, TypeError):
+            return ExcelError.REF
+
+        # Parse the base reference
+        if '!' in ref_str:
+            parts = ref_str.split('!', 1)
+            ref_sheet = parts[0].strip("'")
+            cell_a1 = parts[1].upper()
+        else:
+            ref_sheet = sheet
+            cell_a1 = ref_str.upper()
+
+        # Handle range references (e.g. OFFSET(A1:A5, ...))
+        if ':' in cell_a1:
+            cell_a1 = cell_a1.split(':')[0]  # Use start of range as base
+
+        try:
+            base_row, base_col = a1_to_rowcol(cell_a1)
+        except ValueError:
+            return ExcelError.REF
+
+        # Compute target
+        target_row = base_row + rows_offset
+        target_col = base_col + cols_offset
+
+        h = int(float(height)) if height is not None else 1
+        w = int(float(width)) if width is not None else 1
+
+        if h < 1 or w < 1 or target_row < 1 or target_col < 1:
+            return ExcelError.REF
+
+        # Single cell
+        if h == 1 and w == 1:
+            cell_ref = f"{ref_sheet}!{rowcol_to_a1(target_row, target_col)}"
+            return self._cell_values.get(cell_ref)
+
+        # Multi-cell range
+        end_row = target_row + h - 1
+        end_col = target_col + w - 1
+        start_a1 = rowcol_to_a1(target_row, target_col)
+        end_a1 = rowcol_to_a1(end_row, end_col)
+        range_ref = f"{ref_sheet}!{start_a1}:{end_a1}"
+
+        cells = expand_range(range_ref)
+        values = [self._cell_values.get(c) for c in cells]
+        return RangeValue(values=values, n_rows=h, n_cols=w)
+
+    def _split_top_level_args(self, args_str: str) -> list[str]:
+        """Split on commas at depth 0 WITHOUT resolving - returns raw strings."""
+        args: list[str] = []
+        depth = 0
+        in_string = False
+        current = ""
+        for ch in args_str:
+            if ch == '"':
+                in_string = not in_string
+                current += ch
+            elif not in_string:
+                if ch == '(':
+                    depth += 1
+                    current += ch
+                elif ch == ')':
+                    depth -= 1
+                    current += ch
+                elif ch == ',' and depth == 0:
+                    args.append(current)
+                    current = ""
+                else:
+                    current += ch
+            else:
+                current += ch
+        if current:
+            args.append(current)
+        return args
 
     def _parse_function_args(self, args_str: str, sheet: str) -> list[Any]:
         """Split on commas at depth 0 (respecting strings), resolve each argument."""
@@ -588,8 +713,9 @@ class WorkbookEvaluator:
         """Resolve a single function argument.
 
         Range references (containing ``:`` at depth 0) return a
-        :class:`RangeValue` with 2D shape metadata.  Everything else
-        delegates to ``_eval_expr``.
+        :class:`RangeValue` with 2D shape metadata.  Named ranges that
+        refer to ranges also resolve to :class:`RangeValue`.  Everything
+        else delegates to ``_eval_expr``.
         """
         if not arg:
             return None
@@ -597,6 +723,14 @@ class WorkbookEvaluator:
         # Range reference at top level
         if _has_top_level_colon(arg) and not arg.startswith('"'):
             return self._resolve_range_2d(arg, sheet)
+
+        # Named range that refers to a range (needed for SUM(MyRange) etc.)
+        upper = arg.strip().upper()
+        if upper in self._named_ranges:
+            refers_to = self._named_ranges[upper]
+            if ':' in refers_to:
+                return self._resolve_range_2d(refers_to, sheet)
+            return self._resolve_cell_ref(refers_to, sheet)
 
         return self._eval_expr(arg, sheet)
 

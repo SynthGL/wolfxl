@@ -163,6 +163,43 @@ for row in ws.iter_rows(values_only=True):
 | `ws.iter_rows(values_only=True)` | **6.7x** faster read | Single Rust call, no Cell objects |
 | `ws.cell(r, c, value=v)` | **1.6x** faster write | Per-cell FFI (compatible but slower) |
 
+## Formula Engine
+
+WolfXL includes a **built-in formula evaluator** with 62 functions across 7 categories. Calculate formulas without external dependencies - no need for `formulas` or `xlcalc`.
+
+```python
+from wolfxl import Workbook
+from wolfxl.calc import calculate
+
+wb = Workbook()
+ws = wb.active
+ws["A1"] = 100
+ws["A2"] = 200
+ws["A3"] = "=SUM(A1:A2)"
+ws["B1"] = "=PMT(0.05/12, 360, -300000)"  # monthly mortgage payment
+
+results = calculate(wb)
+print(results["Sheet!A3"])  # 300
+print(results["Sheet!B1"])  # 1610.46...
+
+# Recalculate after changes
+ws["A1"] = 500
+results = calculate(wb)
+print(results["Sheet!A3"])  # 700
+```
+
+| Category | Functions |
+|----------|-----------|
+| **Math** (10) | SUM, ABS, ROUND, ROUNDUP, ROUNDDOWN, INT, MOD, POWER, SQRT, SIGN |
+| **Logic** (5) | IF, AND, OR, NOT, IFERROR |
+| **Lookup** (7) | VLOOKUP, HLOOKUP, INDEX, MATCH, OFFSET, CHOOSE, XLOOKUP |
+| **Statistical** (13) | AVERAGE, AVERAGEIF, AVERAGEIFS, COUNT, COUNTA, COUNTIF, COUNTIFS, MIN, MINIFS, MAX, MAXIFS, SUMIF, SUMIFS |
+| **Financial** (7) | PV, FV, PMT, NPV, IRR, SLN, DB |
+| **Text** (13) | LEFT, RIGHT, MID, LEN, CONCATENATE, UPPER, LOWER, TRIM, SUBSTITUTE, TEXT, REPT, EXACT, FIND |
+| **Date** (8) | TODAY, DATE, YEAR, MONTH, DAY, EDATE, EOMONTH, DAYS |
+
+Named ranges are resolved automatically. Error values (`#N/A`, `#VALUE!`, `#DIV/0!`, `#REF!`, `#NUM!`, `#NAME?`) propagate through formula chains like real Excel. Install `pip install wolfxl[calc]` for extended formula coverage via the `formulas` library fallback.
+
 ## Case Study: SynthGL
 
 [SynthGL](https://synthgl.dev) switched from openpyxl to WolfXL for their GL journal exports (14-column financial data, 1K-50K rows). Results: **4x faster writes**, **9x faster reads** at scale. 50K-row exports dropped from 7.6s to 1.3s. [Read the full case study](docs/case-study-synthgl.md).

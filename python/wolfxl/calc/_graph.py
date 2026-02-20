@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import deque
 from typing import TYPE_CHECKING
 
+import re
+
 from wolfxl.calc._parser import all_references
 
 if TYPE_CHECKING:
@@ -27,10 +29,34 @@ class DependencyGraph:
         # cell -> formula string
         self.formulas: dict[str, str] = {}
 
-    def add_formula(self, cell_ref: str, formula: str, current_sheet: str) -> None:
-        """Register a formula cell and its dependencies."""
+    def add_formula(
+        self,
+        cell_ref: str,
+        formula: str,
+        current_sheet: str,
+        named_ranges: dict[str, str] | None = None,
+    ) -> None:
+        """Register a formula cell and its dependencies.
+
+        If *named_ranges* is provided (``{NAME: refers_to}``), named
+        range tokens in the formula are expanded before reference
+        extraction so the dependency graph correctly tracks them.
+        """
         self.formulas[cell_ref] = formula
-        refs = all_references(formula, current_sheet)
+
+        # Expand named ranges in the formula for reference extraction
+        expanded = formula
+        if named_ranges:
+            for name, refers_to in named_ranges.items():
+                # Word-boundary replace to avoid partial matches
+                expanded = re.sub(
+                    rf'\b{re.escape(name)}\b',
+                    refers_to,
+                    expanded,
+                    flags=re.IGNORECASE,
+                )
+
+        refs = all_references(expanded, current_sheet)
 
         self.dependencies[cell_ref] = set(refs)
 

@@ -1972,10 +1972,10 @@ impl RustXlsxWriterBook {
             ws_map.insert(name.clone(), ws);
         }
 
-        // Apply row heights.
+        // Apply row heights.  Python passes 1-indexed rows (openpyxl convention).
         for ((sheet, row), height) in &self.row_heights {
             if let Some(ws) = ws_map.get_mut(sheet) {
-                ws.set_row_height(*row, *height).map_err(|e| {
+                ws.set_row_height(row.saturating_sub(1), *height).map_err(|e| {
                     PyErr::new::<PyIOError, _>(format!("set_row_height failed: {e}"))
                 })?;
             }

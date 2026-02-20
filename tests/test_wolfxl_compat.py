@@ -1494,3 +1494,200 @@ class TestPlainRead:
         assert row[3] is True
         assert row[4] is None
         wb2.close()
+
+
+# ======================================================================
+# openpyxl Compat Expansion (Phase 7)
+# ======================================================================
+
+
+class TestFreezePanes:
+    """freeze_panes property on write-mode worksheets."""
+
+    def test_set_and_get(self) -> None:
+        from wolfxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        assert ws.freeze_panes is None
+        ws.freeze_panes = "B2"
+        assert ws.freeze_panes == "B2"
+
+    def test_roundtrip(self, tmp_path: Path) -> None:
+        """Freeze panes survive write -> read cycle."""
+        from wolfxl import Workbook, load_workbook
+
+        p = tmp_path / "freeze.xlsx"
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws["A1"] = "header"
+        ws.freeze_panes = "A2"
+        wb.save(str(p))
+
+        wb2 = load_workbook(str(p))
+        ws2 = wb2.active
+        assert ws2 is not None
+        assert ws2.freeze_panes == "A2"
+        wb2.close()
+
+
+class TestRowDimensions:
+    """row_dimensions proxy on worksheets."""
+
+    def test_set_height(self) -> None:
+        from wolfxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.row_dimensions[1].height = 30.0
+        assert ws.row_dimensions[1].height == 30.0
+
+    def test_roundtrip(self, tmp_path: Path) -> None:
+        from wolfxl import Workbook, load_workbook
+
+        p = tmp_path / "rowheight.xlsx"
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws["A1"] = "data"
+        ws.row_dimensions[1].height = 25.0
+        wb.save(str(p))
+
+        wb2 = load_workbook(str(p))
+        ws2 = wb2.active
+        assert ws2 is not None
+        h = ws2.row_dimensions[1].height
+        assert h is not None
+        assert abs(h - 25.0) < 1.0
+        wb2.close()
+
+
+class TestColumnDimensions:
+    """column_dimensions proxy on worksheets."""
+
+    def test_set_width(self) -> None:
+        from wolfxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.column_dimensions["A"].width = 20.0
+        assert ws.column_dimensions["A"].width == 20.0
+
+    def test_roundtrip(self, tmp_path: Path) -> None:
+        from wolfxl import Workbook, load_workbook
+
+        p = tmp_path / "colwidth.xlsx"
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws["A1"] = "data"
+        ws.column_dimensions["A"].width = 18.0
+        wb.save(str(p))
+
+        wb2 = load_workbook(str(p))
+        ws2 = wb2.active
+        assert ws2 is not None
+        w = ws2.column_dimensions["A"].width
+        assert w is not None
+        assert abs(w - 18.0) < 1.0
+        wb2.close()
+
+
+class TestAutoFilter:
+    """auto_filter proxy on worksheets."""
+
+    def test_set_ref(self) -> None:
+        from wolfxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        assert ws.auto_filter.ref is None
+        ws.auto_filter.ref = "A1:D10"
+        assert ws.auto_filter.ref == "A1:D10"
+
+
+class TestUnmergeCells:
+    """unmerge_cells method on worksheets."""
+
+    def setup_method(self) -> None:
+        _require_rust()
+
+    def test_basic_unmerge(self, tmp_path: Path) -> None:
+        """Merge then unmerge removes the range from internal tracking."""
+        from wolfxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.merge_cells("A1:B2")
+        assert "A1:B2" in ws._merged_ranges
+        ws.unmerge_cells("A1:B2")
+        assert "A1:B2" not in ws._merged_ranges
+
+    def test_unmerge_unknown_range_no_error(self) -> None:
+        """Unmerging a range that was never merged should not raise."""
+        from wolfxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        # Should silently do nothing.
+        ws.unmerge_cells("C3:D4")
+        assert "C3:D4" not in ws._merged_ranges
+
+    def test_cells_accessible_after_unmerge(self, tmp_path: Path) -> None:
+        """After unmerge, individual cells remain writable and readable."""
+        from wolfxl import Workbook, load_workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.merge_cells("A1:B2")
+        ws.unmerge_cells("A1:B2")
+        ws["A1"] = "top-left"
+        ws["B2"] = "bottom-right"
+        out = tmp_path / "unmerge_access.xlsx"
+        wb.save(str(out))
+
+        wb2 = load_workbook(str(out))
+        ws2 = wb2[wb2.sheetnames[0]]
+        assert ws2["A1"].value == "top-left"
+        assert ws2["B2"].value == "bottom-right"
+        wb2.close()
+
+
+class TestPrintArea:
+    """print_area property on worksheets."""
+
+    def test_default_is_none(self) -> None:
+        from wolfxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        assert ws.print_area is None
+
+    def test_set_and_get(self) -> None:
+        from wolfxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.print_area = "A1:D10"
+        assert ws.print_area == "A1:D10"
+
+    def test_set_to_none(self) -> None:
+        """Setting print_area back to None clears it."""
+        from wolfxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.print_area = "A1:D10"
+        ws.print_area = None
+        assert ws.print_area is None
