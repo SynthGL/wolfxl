@@ -8,9 +8,12 @@ Modify mode (``Workbook._from_patcher(path)``): read via CalamineStyledBook, sav
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from wolfxl._worksheet import Worksheet
+
+if TYPE_CHECKING:
+    from wolfxl.calc._protocol import RecalcResult
 
 
 class Workbook:
@@ -23,6 +26,7 @@ class Workbook:
         self._rust_writer: Any = _rust.RustXlsxWriterBook()
         self._rust_reader: Any = None
         self._rust_patcher: Any = None
+        self._evaluator: Any = None
         self._sheet_names: list[str] = ["Sheet"]
         self._sheets: dict[str, Worksheet] = {}
         self._sheets["Sheet"] = Worksheet(self, "Sheet")
@@ -36,6 +40,7 @@ class Workbook:
         wb = object.__new__(cls)
         wb._rust_writer = None
         wb._rust_patcher = None
+        wb._evaluator = None
         wb._rust_reader = _rust.CalamineStyledBook.open(path)
         names = [str(n) for n in wb._rust_reader.sheet_names()]
         wb._sheet_names = names
@@ -51,6 +56,7 @@ class Workbook:
 
         wb = object.__new__(cls)
         wb._rust_writer = None
+        wb._evaluator = None
         wb._rust_reader = _rust.CalamineStyledBook.open(path)
         wb._rust_patcher = _rust.XlsxPatcher.open(path)
         names = [str(n) for n in wb._rust_reader.sheet_names()]
@@ -117,6 +123,50 @@ class Workbook:
             self._rust_writer.save(filename)
         else:
             raise RuntimeError("save requires write or modify mode")
+
+    # ------------------------------------------------------------------
+    # Formula evaluation (requires wolfxl.calc)
+    # ------------------------------------------------------------------
+
+    def calculate(self) -> dict[str, Any]:
+        """Evaluate all formulas in the workbook.
+
+        Returns a dict of cell_ref -> computed value for all formula cells.
+        Requires the ``wolfxl.calc`` module (install via ``pip install wolfxl[calc]``).
+
+        The internal evaluator is cached so that a subsequent
+        :meth:`recalculate` call can reuse it without rescanning.
+        """
+        from wolfxl.calc._evaluator import WorkbookEvaluator
+
+        ev = WorkbookEvaluator()
+        ev.load(self)
+        result = ev.calculate()
+        self._evaluator = ev  # cache for recalculate()
+        return result
+
+    def recalculate(
+        self,
+        perturbations: dict[str, float | int],
+        tolerance: float = 1e-10,
+    ) -> RecalcResult:
+        """Perturb input cells and recompute affected formulas.
+
+        Returns a ``RecalcResult`` describing which cells changed.
+        Requires the ``wolfxl.calc`` module.
+
+        If :meth:`calculate` was called first, the cached evaluator is
+        reused (avoiding a full rescan + recalculate).
+        """
+        ev = self._evaluator
+        if ev is None:
+            from wolfxl.calc._evaluator import WorkbookEvaluator
+
+            ev = WorkbookEvaluator()
+            ev.load(self)
+            ev.calculate()
+            self._evaluator = ev
+        return ev.recalculate(perturbations, tolerance)
 
     # ------------------------------------------------------------------
     # Context manager + cleanup
