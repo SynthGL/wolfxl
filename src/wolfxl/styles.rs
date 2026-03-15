@@ -100,7 +100,7 @@ pub fn parse_cellxfs(xml: &str) -> Vec<XfEntry> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                let tag = e.name();
+                let tag = e.local_name();
                 if tag.as_ref() == b"cellXfs" {
                     in_cellxfs = true;
                 } else if tag.as_ref() == b"xf" && in_cellxfs {
@@ -108,7 +108,7 @@ pub fn parse_cellxfs(xml: &str) -> Vec<XfEntry> {
                 }
             }
             Ok(Event::End(ref e)) => {
-                if e.name().as_ref() == b"cellXfs" {
+                if e.local_name().as_ref() == b"cellXfs" {
                     in_cellxfs = false;
                 }
             }
@@ -173,7 +173,7 @@ pub fn count_section_elements(xml: &str, section_tag: &str) -> (u32, u64) {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
-                if e.name().as_ref() == section_bytes {
+                if e.local_name().as_ref() == section_bytes {
                     in_section = true;
                     // Try to read count from attribute first
                     if let Some(c) = attr_value(e, b"count") {
@@ -181,12 +181,12 @@ pub fn count_section_elements(xml: &str, section_tag: &str) -> (u32, u64) {
                             count = n;
                         }
                     }
-                } else if in_section && e.name().as_ref() == child_tag.as_slice() {
+                } else if in_section && e.local_name().as_ref() == child_tag.as_slice() {
                     // Count child elements if count attr wasn't present
                 }
             }
             Ok(Event::Empty(ref e)) => {
-                if e.name().as_ref() == section_bytes {
+                if e.local_name().as_ref() == section_bytes {
                     // Self-closing section, empty
                     if let Some(c) = attr_value(e, b"count") {
                         if let Ok(n) = c.parse::<u32>() {
@@ -196,7 +196,7 @@ pub fn count_section_elements(xml: &str, section_tag: &str) -> (u32, u64) {
                 }
             }
             Ok(Event::End(ref e)) => {
-                if e.name().as_ref() == section_bytes {
+                if e.local_name().as_ref() == section_bytes {
                     in_section = false;
                     end_offset = reader.buffer_position();
                 }
@@ -411,7 +411,7 @@ pub fn find_or_create_num_fmt(xml: &str, format_code: &str) -> (String, u32) {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                if e.name().as_ref() == b"numFmt" {
+                if e.local_name().as_ref() == b"numFmt" {
                     let id = attr_value(e, b"numFmtId")
                         .and_then(|s| s.parse::<u32>().ok())
                         .unwrap_or(0);

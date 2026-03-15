@@ -26,7 +26,7 @@ pub fn parse_shared_strings(xml: &str) -> Vec<String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                let tag = e.name();
+                let tag = e.local_name();
                 if tag.as_ref() == b"si" {
                     current = Some(String::new());
                 } else if tag.as_ref() == b"t" {
@@ -34,7 +34,7 @@ pub fn parse_shared_strings(xml: &str) -> Vec<String> {
                 }
             }
             Ok(Event::End(e)) => {
-                let tag = e.name();
+                let tag = e.local_name();
                 if tag.as_ref() == b"si" {
                     strings.push(current.take().unwrap_or_default());
                 } else if tag.as_ref() == b"t" {

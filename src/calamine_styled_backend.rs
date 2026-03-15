@@ -1226,7 +1226,7 @@ impl CalamineStyledBook {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    if e.name().as_ref() == b"Relationship" {
+                    if e.local_name().as_ref() == b"Relationship" {
                         let rel_type = ooxml_util::attr_value(&e, b"Type").unwrap_or_default();
                         if rel_type.ends_with(type_suffix)
                             || rel_type.ends_with(&format!("/{type_suffix}"))
@@ -1263,7 +1263,7 @@ impl CalamineStyledBook {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    if e.name().as_ref() == b"mergeCell" {
+                    if e.local_name().as_ref() == b"mergeCell" {
                         if let Some(r) = ooxml_util::attr_value(&e, b"ref") {
                             out.push(r);
                         }
@@ -1292,7 +1292,7 @@ impl CalamineStyledBook {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    if e.name().as_ref() == b"c" {
+                    if e.local_name().as_ref() == b"c" {
                         let a1 = ooxml_util::attr_value(&e, b"r").unwrap_or_default();
                         if a1.is_empty() {
                             continue;
@@ -1342,7 +1342,7 @@ impl CalamineStyledBook {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(ref e)) => {
-                    let name = e.name();
+                    let name = e.local_name();
                     if name.as_ref() == b"c" {
                         // Extract cell reference from r="A1" attribute.
                         let a1 = ooxml_util::attr_value(e, b"r").unwrap_or_default();
@@ -1357,7 +1357,7 @@ impl CalamineStyledBook {
                     }
                 }
                 Ok(Event::End(ref e)) => {
-                    let name = e.name();
+                    let name = e.local_name();
                     if name.as_ref() == b"f" && in_formula {
                         in_formula = false;
                         if let Some(pos) = current_cell {
@@ -1376,7 +1376,7 @@ impl CalamineStyledBook {
                 }
                 Ok(Event::Empty(ref e)) => {
                     // Handle self-closing <c .../> (cells with no children — no formula).
-                    if e.name().as_ref() == b"c" {
+                    if e.local_name().as_ref() == b"c" {
                         // No formula possible in an empty element, skip.
                     }
                 }
@@ -1426,7 +1426,7 @@ impl CalamineStyledBook {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    if e.name().as_ref() == b"hyperlink" {
+                    if e.local_name().as_ref() == b"hyperlink" {
                         let cell = ooxml_util::attr_value(&e, b"ref").unwrap_or_default();
                         if cell.is_empty() {
                             continue;
@@ -1574,7 +1574,7 @@ impl CalamineStyledBook {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) => {
-                    let name = e.name();
+                    let name = e.local_name();
                     let name = name.as_ref();
                     if name == b"author" {
                         in_author = true;
@@ -1590,7 +1590,7 @@ impl CalamineStyledBook {
                     }
                 }
                 Ok(Event::End(e)) => {
-                    let name = e.name();
+                    let name = e.local_name();
                     let name = name.as_ref();
                     if name == b"author" {
                         in_author = false;
@@ -1663,7 +1663,7 @@ impl CalamineStyledBook {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    if e.name().as_ref() == b"pane" {
+                    if e.local_name().as_ref() == b"pane" {
                         let state = ooxml_util::attr_value(&e, b"state").unwrap_or_default();
                         let state_lc = state.to_ascii_lowercase();
                         if state_lc == "split" {
@@ -1765,9 +1765,9 @@ impl CalamineStyledBook {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) => {
-                    if e.name().as_ref() == b"dxfs" {
+                    if e.local_name().as_ref() == b"dxfs" {
                         in_dxfs = true;
-                    } else if in_dxfs && e.name().as_ref() == b"dxf" {
+                    } else if in_dxfs && e.local_name().as_ref() == b"dxf" {
                         in_dxf = true;
                         dxf_depth = 1;
                         cur_bg = None;
@@ -1779,7 +1779,7 @@ impl CalamineStyledBook {
                     if !in_dxf {
                         // nothing
                     } else {
-                        if e.name().as_ref() == b"fgColor" || e.name().as_ref() == b"bgColor" {
+                        if e.local_name().as_ref() == b"fgColor" || e.local_name().as_ref() == b"bgColor" {
                             if cur_bg.is_none() {
                                 if let Some(rgb) = ooxml_util::attr_value(&e, b"rgb") {
                                     cur_bg = Self::normalize_ooxml_rgb(&rgb);
@@ -1790,7 +1790,7 @@ impl CalamineStyledBook {
                 }
                 Ok(Event::End(e)) => {
                     if in_dxf {
-                        if e.name().as_ref() == b"dxf" {
+                        if e.local_name().as_ref() == b"dxf" {
                             out.push(cur_bg.take());
                             in_dxf = false;
                             dxf_depth = 0;
@@ -1798,7 +1798,7 @@ impl CalamineStyledBook {
                             dxf_depth -= 1;
                         }
                     }
-                    if e.name().as_ref() == b"dxfs" {
+                    if e.local_name().as_ref() == b"dxfs" {
                         in_dxfs = false;
                     }
                 }
@@ -1882,7 +1882,7 @@ impl CalamineStyledBook {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) => match e.name().as_ref() {
+                Ok(Event::Start(e)) => match e.local_name().as_ref() {
                     b"borders" => {
                         in_borders = true;
                     }
@@ -1923,7 +1923,7 @@ impl CalamineStyledBook {
                     _ => {}
                 },
                 Ok(Event::Empty(e)) => {
-                    match e.name().as_ref() {
+                    match e.local_name().as_ref() {
                         b"border" if in_borders => {
                             // Rare, but handle self-closing border.
                             let mut def = BorderDef::default();
@@ -1958,7 +1958,7 @@ impl CalamineStyledBook {
                         _ => {}
                     }
                 }
-                Ok(Event::End(e)) => match e.name().as_ref() {
+                Ok(Event::End(e)) => match e.local_name().as_ref() {
                     b"borders" => {
                         in_borders = false;
                     }
@@ -2037,9 +2037,9 @@ impl CalamineStyledBook {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) => {
-                    if e.name().as_ref() == b"conditionalFormatting" {
+                    if e.local_name().as_ref() == b"conditionalFormatting" {
                         current_range = ooxml_util::attr_value(&e, b"sqref");
-                    } else if e.name().as_ref() == b"cfRule" {
+                    } else if e.local_name().as_ref() == b"cfRule" {
                         let range = current_range.clone().unwrap_or_default();
                         let rule_type = ooxml_util::attr_value(&e, b"type").unwrap_or_default();
                         let operator = ooxml_util::attr_value(&e, b"operator");
@@ -2059,17 +2059,17 @@ impl CalamineStyledBook {
                             stop_if_true,
                             bg_color: None,
                         });
-                    } else if e.name().as_ref() == b"formula" {
+                    } else if e.local_name().as_ref() == b"formula" {
                         in_formula = true;
                         formula_buf.clear();
-                    } else if e.name().as_ref() == b"dxf" {
+                    } else if e.local_name().as_ref() == b"dxf" {
                         in_dxf = true;
                     }
                 }
                 Ok(Event::Empty(e)) => {
-                    if e.name().as_ref() == b"conditionalFormatting" {
+                    if e.local_name().as_ref() == b"conditionalFormatting" {
                         current_range = ooxml_util::attr_value(&e, b"sqref");
-                    } else if e.name().as_ref() == b"cfRule" {
+                    } else if e.local_name().as_ref() == b"cfRule" {
                         let range = current_range.clone().unwrap_or_default();
                         let rule_type = ooxml_util::attr_value(&e, b"type").unwrap_or_default();
                         let operator = ooxml_util::attr_value(&e, b"operator");
@@ -2104,7 +2104,7 @@ impl CalamineStyledBook {
                             out.push(rule);
                         }
                     } else if in_dxf {
-                        if e.name().as_ref() == b"fgColor" || e.name().as_ref() == b"bgColor" {
+                        if e.local_name().as_ref() == b"fgColor" || e.local_name().as_ref() == b"bgColor" {
                             if let Some(ref mut rule) = cur_rule {
                                 if rule.bg_color.is_none() {
                                     if let Some(rgb) = ooxml_util::attr_value(&e, b"rgb") {
@@ -2122,9 +2122,9 @@ impl CalamineStyledBook {
                     }
                 }
                 Ok(Event::End(e)) => {
-                    if e.name().as_ref() == b"conditionalFormatting" {
+                    if e.local_name().as_ref() == b"conditionalFormatting" {
                         current_range = None;
-                    } else if e.name().as_ref() == b"formula" {
+                    } else if e.local_name().as_ref() == b"formula" {
                         if in_formula {
                             in_formula = false;
                             let f = formula_buf.trim().to_string();
@@ -2139,9 +2139,9 @@ impl CalamineStyledBook {
                                 }
                             }
                         }
-                    } else if e.name().as_ref() == b"dxf" {
+                    } else if e.local_name().as_ref() == b"dxf" {
                         in_dxf = false;
-                    } else if e.name().as_ref() == b"cfRule" {
+                    } else if e.local_name().as_ref() == b"cfRule" {
                         let Some(mut rule) = cur_rule.take() else {
                             cur_dxf_id = None;
                             continue;
@@ -2229,7 +2229,7 @@ impl CalamineStyledBook {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) => {
-                    if e.name().as_ref() == b"dataValidation" {
+                    if e.local_name().as_ref() == b"dataValidation" {
                         in_validation = true;
                         let range = ooxml_util::attr_value(&e, b"sqref").unwrap_or_default();
                         let validation_type = ooxml_util::attr_value(&e, b"type")
@@ -2270,10 +2270,10 @@ impl CalamineStyledBook {
                             error_title,
                             error,
                         });
-                    } else if in_validation && e.name().as_ref() == b"formula1" {
+                    } else if in_validation && e.local_name().as_ref() == b"formula1" {
                         in_formula1 = true;
                         formula1_buf.clear();
-                    } else if in_validation && e.name().as_ref() == b"formula2" {
+                    } else if in_validation && e.local_name().as_ref() == b"formula2" {
                         in_formula2 = true;
                         formula2_buf.clear();
                     }
@@ -2287,7 +2287,7 @@ impl CalamineStyledBook {
                     }
                 }
                 Ok(Event::End(e)) => {
-                    if e.name().as_ref() == b"formula1" {
+                    if e.local_name().as_ref() == b"formula1" {
                         in_formula1 = false;
                         if let Some(ref mut dv) = cur {
                             let f = formula1_buf.trim().to_string();
@@ -2300,7 +2300,7 @@ impl CalamineStyledBook {
                                 dv.formula1 = Some(formula);
                             }
                         }
-                    } else if e.name().as_ref() == b"formula2" {
+                    } else if e.local_name().as_ref() == b"formula2" {
                         in_formula2 = false;
                         if let Some(ref mut dv) = cur {
                             let f = formula2_buf.trim().to_string();
@@ -2313,7 +2313,7 @@ impl CalamineStyledBook {
                                 dv.formula2 = Some(formula);
                             }
                         }
-                    } else if e.name().as_ref() == b"dataValidation" {
+                    } else if e.local_name().as_ref() == b"dataValidation" {
                         in_validation = false;
                         if let Some(dv) = cur.take() {
                             if !dv.range.trim().is_empty() {
@@ -2384,7 +2384,7 @@ impl CalamineStyledBook {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) => {
-                    if e.name().as_ref() == b"definedName" {
+                    if e.local_name().as_ref() == b"definedName" {
                         in_defined_name = true;
                         cur_name = ooxml_util::attr_value(&e, b"name");
                         cur_local_id = ooxml_util::attr_value(&e, b"localSheetId")
@@ -2399,7 +2399,7 @@ impl CalamineStyledBook {
                     }
                 }
                 Ok(Event::End(e)) => {
-                    if e.name().as_ref() == b"definedName" {
+                    if e.local_name().as_ref() == b"definedName" {
                         in_defined_name = false;
                         let Some(n) = cur_name.take() else {
                             continue;
@@ -2475,7 +2475,7 @@ impl CalamineStyledBook {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    if e.name().as_ref() == b"tablePart" {
+                    if e.local_name().as_ref() == b"tablePart" {
                         if let Some(rid) = ooxml_util::attr_value(&e, b"r:id") {
                             if !rid.is_empty() {
                                 table_rids.push(rid);
@@ -2532,7 +2532,7 @@ impl CalamineStyledBook {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    if e.name().as_ref() == b"table" {
+                    if e.local_name().as_ref() == b"table" {
                         name = ooxml_util::attr_value(&e, b"name")
                             .or_else(|| ooxml_util::attr_value(&e, b"displayName"))
                             .unwrap_or_default();
@@ -2545,7 +2545,7 @@ impl CalamineStyledBook {
                             Some(v) => v != "0",
                             None => false,
                         };
-                    } else if e.name().as_ref() == b"tableStyleInfo" {
+                    } else if e.local_name().as_ref() == b"tableStyleInfo" {
                         style = ooxml_util::attr_value(&e, b"name").and_then(|s| {
                             if s.is_empty() {
                                 None
@@ -2553,11 +2553,11 @@ impl CalamineStyledBook {
                                 Some(s)
                             }
                         });
-                    } else if e.name().as_ref() == b"tableColumn" {
+                    } else if e.local_name().as_ref() == b"tableColumn" {
                         if let Some(cn) = ooxml_util::attr_value(&e, b"name") {
                             columns.push(cn);
                         }
-                    } else if e.name().as_ref() == b"autoFilter" {
+                    } else if e.local_name().as_ref() == b"autoFilter" {
                         autofilter = true;
                     }
                 }

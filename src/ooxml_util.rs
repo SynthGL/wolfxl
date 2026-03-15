@@ -55,7 +55,7 @@ pub fn parse_workbook_sheet_rids(xml: &str) -> PyResult<Vec<(String, String)>> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                if e.name().as_ref() == b"sheet" {
+                if e.local_name().as_ref() == b"sheet" {
                     let name = attr_value(&e, b"name");
                     let rid = attr_value(&e, b"r:id");
                     if let (Some(n), Some(r)) = (name, rid) {
@@ -86,7 +86,7 @@ pub fn parse_relationship_targets(xml: &str) -> PyResult<HashMap<String, String>
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                if e.name().as_ref() == b"Relationship" {
+                if e.local_name().as_ref() == b"Relationship" {
                     let id = attr_value(&e, b"Id");
                     let target = attr_value(&e, b"Target");
                     if let (Some(i), Some(t)) = (id, target) {

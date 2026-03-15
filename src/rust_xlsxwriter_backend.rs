@@ -656,9 +656,9 @@ fn patch_sheet_xml_split_panes(xml: &str, x_split: i32, y_split: i32) -> PyResul
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                let is_pane = e.name().as_ref() == b"pane";
-                let is_selection = e.name().as_ref() == b"selection";
-                let is_sheet_view = e.name().as_ref() == b"sheetView";
+                let is_pane = e.local_name().as_ref() == b"pane";
+                let is_selection = e.local_name().as_ref() == b"selection";
+                let is_sheet_view = e.local_name().as_ref() == b"sheetView";
                 if skip_depth > 0 {
                     skip_depth += 1;
                 } else if in_sheet_view && is_pane {
@@ -681,9 +681,9 @@ fn patch_sheet_xml_split_panes(xml: &str, x_split: i32, y_split: i32) -> PyResul
                 }
             }
             Ok(Event::Empty(e)) => {
-                let is_pane = e.name().as_ref() == b"pane";
-                let is_selection = e.name().as_ref() == b"selection";
-                let is_sheet_view = e.name().as_ref() == b"sheetView";
+                let is_pane = e.local_name().as_ref() == b"pane";
+                let is_selection = e.local_name().as_ref() == b"selection";
+                let is_sheet_view = e.local_name().as_ref() == b"sheetView";
                 if skip_depth > 0 {
                     // skip
                 } else if in_sheet_view && is_pane {
@@ -708,7 +708,7 @@ fn patch_sheet_xml_split_panes(xml: &str, x_split: i32, y_split: i32) -> PyResul
                 }
             }
             Ok(Event::End(e)) => {
-                let is_sheet_view = e.name().as_ref() == b"sheetView";
+                let is_sheet_view = e.local_name().as_ref() == b"sheetView";
                 if skip_depth > 0 {
                     skip_depth -= 1;
                 } else if is_sheet_view {
@@ -934,7 +934,7 @@ fn extract_table_name(xml: &str) -> Option<String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                if e.name().as_ref() == b"table" {
+                if e.local_name().as_ref() == b"table" {
                     let name = ooxml_util::attr_value(&e, b"name")
                         .or_else(|| ooxml_util::attr_value(&e, b"displayName"));
                     return name;
@@ -958,7 +958,7 @@ fn patch_table_xml_ref(xml: &str, new_ref: &str) -> PyResult<String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                let name_bytes = e.name().as_ref().to_vec();
+                let name_bytes = e.local_name().as_ref().to_vec();
                 let name_str = std::str::from_utf8(&name_bytes).unwrap_or("");
 
                 if name_bytes.as_slice() == b"table" || name_bytes.as_slice() == b"autoFilter" {
@@ -994,7 +994,7 @@ fn patch_table_xml_ref(xml: &str, new_ref: &str) -> PyResult<String> {
                 }
             }
             Ok(Event::Empty(e)) => {
-                let name_bytes = e.name().as_ref().to_vec();
+                let name_bytes = e.local_name().as_ref().to_vec();
                 let name_str = std::str::from_utf8(&name_bytes).unwrap_or("");
 
                 if name_bytes.as_slice() == b"table" || name_bytes.as_slice() == b"autoFilter" {

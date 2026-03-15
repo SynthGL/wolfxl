@@ -87,7 +87,7 @@ pub fn patch_worksheet(xml: &str, patches: &[CellPatch]) -> Result<String, Strin
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
-                let tag = e.name().as_ref().to_vec();
+                let tag = e.local_name().as_ref().to_vec();
 
                 if tag == b"sheetData" {
                     in_sheet_data = true;
@@ -142,7 +142,7 @@ pub fn patch_worksheet(xml: &str, patches: &[CellPatch]) -> Result<String, Strin
                 }
             }
             Ok(Event::Empty(ref e)) => {
-                let tag = e.name().as_ref().to_vec();
+                let tag = e.local_name().as_ref().to_vec();
 
                 if tag == b"row" && in_sheet_data {
                     // Self-closing empty row — handle insertions
@@ -196,7 +196,7 @@ pub fn patch_worksheet(xml: &str, patches: &[CellPatch]) -> Result<String, Strin
                 }
             }
             Ok(Event::End(ref e)) => {
-                let tag = e.name().as_ref().to_vec();
+                let tag = e.local_name().as_ref().to_vec();
 
                 if tag == b"c" && skip_until_cell_end {
                     skip_until_cell_end = false;
